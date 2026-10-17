@@ -22,6 +22,8 @@ import re
 
 import aiohttp
 
+from unifi_core.exceptions import UniFiConnectionError
+
 #: What aiohttp accepts as ``ssl=``: ``True`` verifies, ``False`` disables,
 #: a :class:`aiohttp.Fingerprint` pins.
 SslSetting = aiohttp.Fingerprint | bool
@@ -98,6 +100,16 @@ def warn_if_unverified(logger: logging.Logger, setting: SslSetting, *, product: 
     )
 
 
+class CertificateVerificationError(UniFiConnectionError):
+    """A controller request failed its certificate check.
+
+    Carries fixed remediation text and the failing exception's class only. The
+    aiohttp exception it replaces names the controller host and port, and a pin
+    mismatch also both fingerprints; build it with :func:`certificate_failure`
+    and raise it outside the ``except`` block so the original is not chained.
+    """
+
+
 def is_certificate_error(error: BaseException) -> bool:
     """Whether ``error``, or anything it was raised from, is a failed certificate check.
 
@@ -109,7 +121,10 @@ def is_certificate_error(error: BaseException) -> bool:
     current: BaseException | None = error
     while current is not None and id(current) not in seen:
         seen.add(id(current))
-        if isinstance(current, (aiohttp.ClientConnectorCertificateError, aiohttp.ServerFingerprintMismatch)):
+        if isinstance(
+            current,
+            (aiohttp.ClientConnectorCertificateError, aiohttp.ServerFingerprintMismatch, CertificateVerificationError),
+        ):
             return True
         current = current.__cause__ or current.__context__
     return False
@@ -123,3 +138,12 @@ def certificate_error_hint(*, env_prefix: str) -> str:
         f"if the fingerprint is already set, the certificate has changed. UNIFI_{env_prefix}_VERIFY_SSL=false "
         "disables the check entirely."
     )
+
+
+def certificate_failure(error: BaseException, *, env_prefix: str) -> CertificateVerificationError:
+    """Replace a failed certificate check with an error that is safe to log and return to a caller.
+
+    The message is the exception class plus :func:`certificate_error_hint`; nothing from
+    ``str(error)`` is kept.
+    """
+    return CertificateVerificationError(f"{type(error).__name__}: {certificate_error_hint(env_prefix=env_prefix)}")

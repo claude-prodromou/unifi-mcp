@@ -9,8 +9,11 @@ import aiohttp
 import pytest
 from aiohttp import web
 from unifi_core.connection import ConnectionConfig
+from unifi_core.exceptions import UniFiConnectionError
 from unifi_core.tls import (
+    CertificateVerificationError,
     certificate_error_hint,
+    certificate_failure,
     is_certificate_error,
     parse_fingerprint,
     ssl_setting,
@@ -106,6 +109,16 @@ class TestCertificateError:
         hint = certificate_error_hint(env_prefix="PROTECT")
         assert "UNIFI_PROTECT_SSL_FINGERPRINT" in hint
         assert "UNIFI_PROTECT_VERIFY_SSL=false" in hint
+
+    def test_failure_keeps_only_the_class_and_the_hint(self):
+        mismatch = aiohttp.ServerFingerprintMismatch(DIGEST, b"\xbb" * 32, "198.51.100.7", 8443)
+        failure = certificate_failure(mismatch, env_prefix="NETWORK")
+        assert isinstance(failure, CertificateVerificationError)
+        assert isinstance(failure, UniFiConnectionError)
+        assert str(failure) == f"ServerFingerprintMismatch: {certificate_error_hint(env_prefix='NETWORK')}"
+        for marker in ("198.51.100.7", "8443", HEX, "bb" * 32, repr(DIGEST)):
+            assert marker not in str(failure)
+        assert is_certificate_error(failure)
 
 
 # ---------------------------------------------------------------------------
