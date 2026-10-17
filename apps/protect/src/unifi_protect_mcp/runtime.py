@@ -127,7 +127,7 @@ def get_server() -> UniFiMCPServer:
 
     server = UniFiMCPServer(
         name="unifi-protect-mcp",
-        debug=True,
+        debug=False,
         website_url=PROJECT_WEBSITE_URL,
         transport_security=transport_security,
         tools_manifest_path=_TOOLS_MANIFEST_PATH,
