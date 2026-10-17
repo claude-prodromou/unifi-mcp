@@ -120,3 +120,33 @@ class TestAccess:
         assert "UNIFI_ACCESS_SSL_FINGERPRINT" in manager._unreachable_message()
         manager._path_failures = [aiohttp.ClientConnectionError("refused")]
         assert "FINGERPRINT" not in manager._unreachable_message()
+
+    async def test_certificate_failures_are_logged_without_their_details(self, manager_cls, caplog):
+        # A pin mismatch's text names the host, port and both fingerprints;
+        # the per-path logs must carry only the exception class.
+        pytest.importorskip("unifi_access_api")
+        host = "198.51.100.7"
+        mismatch = aiohttp.ServerFingerprintMismatch(b"\xaa" * 32, b"\xbb" * 32, host, 8443)
+        detail_markers = [host, "8443", "aa" * 32, "bb" * 32, "AA" * 32, "BB" * 32]
+        assert any(marker in str(mismatch) for marker in detail_markers)
+
+        manager = manager_cls(host, "admin", "secret", api_key="key", ssl_fingerprint=FINGERPRINT)
+        client = MagicMock()
+        client.authenticate = AsyncMock(side_effect=mismatch)
+
+        async def failing_login():
+            raise mismatch
+
+        with caplog.at_level(logging.WARNING):
+            with patch("unifi_access_api.UnifiAccessApiClient", return_value=client):
+                await manager._try_api_client()
+            with patch.object(manager, "_proxy_login", side_effect=failing_login):
+                await manager._try_proxy_session()
+
+        path_logs = [r.getMessage() for r in caplog.records if "non-fatal" in r.getMessage()]
+        assert len(path_logs) == 2
+        for message in path_logs:
+            assert "ServerFingerprintMismatch" in message
+            for marker in detail_markers:
+                assert marker not in message
+        assert "UNIFI_ACCESS_SSL_FINGERPRINT" in manager._unreachable_message()

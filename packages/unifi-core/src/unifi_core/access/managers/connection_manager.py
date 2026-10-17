@@ -483,9 +483,12 @@ class AccessConnectionManager:
         except Exception as exc:
             self._path_failures.append(exc)
             self._api_support_attempt = connection_attempt_failed(exc)
+            # Class name only: a certificate failure's text carries the host,
+            # port and both fingerprints. The fixed remediation is added by
+            # _unreachable_message() once every path has failed.
             logger.warning(
                 "[access-cm] API client auth failed (non-fatal, will try proxy): %s",
-                exc,
+                type(exc).__name__,
             )
             # Clean up the failed session
             if self._api_session and not self._api_session.closed:
@@ -516,7 +519,7 @@ class AccessConnectionManager:
             self._proxy_support_attempt = connection_attempt_failed(exc)
             logger.warning(
                 "[access-cm] Proxy login failed (non-fatal if API client available): %s",
-                exc,
+                type(exc).__name__,
             )
             if self._proxy_session and not self._proxy_session.closed:
                 await self._proxy_session.close()
