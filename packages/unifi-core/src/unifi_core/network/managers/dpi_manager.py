@@ -76,7 +76,7 @@ class DpiManager:
                 async with session.get(
                     url,
                     params=params,
-                    ssl=self._connection.verify_ssl,
+                    ssl=self._connection.ssl,
                     timeout=aiohttp.ClientTimeout(total=10),
                     allow_redirects=False,
                 ) as resp:

@@ -128,10 +128,16 @@ command provider, never the raw key.
 ## Step 3: Optional Settings
 
 Ask whether to use defaults or customize:
-- Defaults: port `443`, site `default`, SSL verification `false`, lazy tool loading
+- Defaults: port `443`, site `default`, SSL verification `true`, lazy tool loading
 - Customize: ask for port (`UNIFI_NETWORK_PORT`), site (`UNIFI_NETWORK_SITE`), SSL
-  verification (`UNIFI_NETWORK_VERIFY_SSL`), and tool registration mode (`UNIFI_TOOL_REGISTRATION_MODE`: `lazy`, `eager` or
+  verification (`UNIFI_NETWORK_VERIFY_SSL`), a certificate pin (`UNIFI_NETWORK_SSL_FINGERPRINT`), and tool registration mode (`UNIFI_TOOL_REGISTRATION_MODE`: `lazy`, `eager` or
   `meta_only`; the Claude Code option is `registration_mode`)
+
+Most consoles serve a self-signed certificate, which the default verification rejects. Unless the user
+says the certificate chains to a trusted CA, offer to pin it: have the user read the SHA-256 fingerprint
+(`openssl s_client -connect <host>:443 </dev/null | openssl x509 -noout -fingerprint -sha256`) and set
+`UNIFI_NETWORK_SSL_FINGERPRINT` (Claude Code option `ssl_fingerprint`). Set `UNIFI_NETWORK_VERIFY_SSL=false` only
+if the user asks to turn verification off. See `docs/tls-verification.md`.
 
 ## Step 4: Permission Configuration
 

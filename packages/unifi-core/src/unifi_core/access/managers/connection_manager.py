@@ -47,6 +47,14 @@ from unifi_core.support_bundle import (
     connectivity_probe_result,
 )
 from unifi_core.support_transport import no_retry_support_request
+from unifi_core.tls import (
+    SslSetting,
+    certificate_error_hint,
+    is_certificate_error,
+    ssl_setting,
+    tls_mode,
+    warn_if_unverified,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +92,11 @@ class AccessConnectionManager:
     port:
         HTTPS port for the UniFi OS Console (default 443).
     verify_ssl:
-        Whether to verify the server's TLS certificate.
+        Whether to verify the server's TLS certificate (default ``True``).
+    ssl_fingerprint:
+        SHA-256 fingerprint of the console certificate. When set, it is pinned
+        on both paths and takes precedence over ``verify_ssl``; see
+        :mod:`unifi_core.tls`.
     api_key:
         Optional API key for the official Access API (port ``api_port``).
     api_port:
@@ -97,15 +109,18 @@ class AccessConnectionManager:
         username: str,
         password: str,
         port: int = 443,
-        verify_ssl: bool = False,
+        verify_ssl: bool = True,
         api_key: str | None = None,
         api_port: int = 12445,
+        ssl_fingerprint: str | None = None,
     ) -> None:
         self.host = host
         self.username = username
         self.password = password
         self.port = port
         self.verify_ssl = verify_ssl
+        self.ssl_fingerprint = ssl_fingerprint
+        warn_if_unverified(logger, ssl_setting(verify_ssl, ssl_fingerprint), product="Access", env_prefix="ACCESS")
 
         # Path 1: py-unifi-access (API key auth on dedicated port)
         self._api_client: Any | None = None  # UnifiAccessApiClient
@@ -147,18 +162,25 @@ class AccessConnectionManager:
     # ------------------------------------------------------------------
 
     @functools.cached_property
-    def _ssl_context(self) -> ssl.SSLContext | bool:
-        """Return an SSL context appropriate for the current verify_ssl setting.
+    def _ssl_context(self) -> ssl.SSLContext | SslSetting:
+        """Return the aiohttp ``ssl=`` value for the current TLS settings.
 
-        Cached to avoid recreating the SSL context (and reloading the CA bundle)
-        on every request.
+        A configured fingerprint pins the certificate; otherwise ``verify_ssl``
+        decides. Cached to avoid recreating the SSL context (and reloading the
+        CA bundle) on every request.
         """
-        if self.verify_ssl:
-            return True
+        setting = ssl_setting(self.verify_ssl, self.ssl_fingerprint)
+        if setting is not False:
+            return setting
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
         return ctx
+
+    @property
+    def _tls_mode(self) -> str:
+        context = self._ssl_context
+        return tls_mode(False if isinstance(context, ssl.SSLContext) else context)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -387,11 +409,14 @@ class AccessConnectionManager:
 
     def _unreachable_message(self) -> str:
         # A rejected login has its own message; this one never blames the credentials.
-        return (
+        message = (
             f"Could not connect to UniFi Access at {self.host} "
             f"(tried {' and '.join(self._configured_paths())}). Check that the controller is reachable "
             "from this machine and that UniFi Access is running on it."
         )
+        if any(is_certificate_error(failure) for failure in self._path_failures):
+            message += " " + certificate_error_hint(env_prefix="ACCESS")
+        return message
 
     def _rejected_message(self) -> str:
         return (
@@ -446,7 +471,10 @@ class AccessConnectionManager:
                 host=f"https://{self.host}:{self._api_port}",
                 api_token=self._api_key,
                 session=self._api_session,
-                verify_ssl=self.verify_ssl,
+                # Pinned: the SDK sends ssl=True per request and the session's
+                # connector applies the fingerprint (aiohttp checks a connector
+                # pin even when the request asks for no verification).
+                verify_ssl=self._tls_mode != "disabled",
             )
             await self._api_client.authenticate()
             self._api_client_available = True
@@ -855,7 +883,7 @@ class AccessConnectionManager:
         return {
             "initialized": self._initialized,
             "connected": self.is_connected,
-            "tls_verification_enabled": self.verify_ssl,
+            "tls_verification_enabled": self._tls_mode != "disabled",
             "last_attempt": dict(self._support_attempt),
             "developer_api_available": self.has_api_client,
             "proxy_session_available": self.has_proxy,

@@ -10,6 +10,8 @@ import logging
 
 import aiohttp
 
+from unifi_core.tls import ssl_setting
+
 logger = logging.getLogger(__name__)
 
 
@@ -28,7 +30,7 @@ class ControllerType(enum.Enum):
 
 
 async def detect_controller_type_pre_login(
-    host: str, port: int, verify_ssl: bool = False, timeout: float = 10.0
+    host: str, port: int, verify_ssl: bool = True, timeout: float = 10.0, ssl_fingerprint: str | None = None
 ) -> ControllerType | None:
     """Probe the controller before login to detect type.
 
@@ -41,7 +43,7 @@ async def detect_controller_type_pre_login(
         ControllerType.UNIFI_OS or ControllerType.STANDALONE if detected, None otherwise.
     """
     url = f"https://{host}:{port}"
-    ssl_context = None if verify_ssl else False
+    ssl_context = ssl_setting(verify_ssl, ssl_fingerprint)
     client_timeout = aiohttp.ClientTimeout(total=timeout)
 
     try:
@@ -59,7 +61,7 @@ async def detect_controller_type_pre_login(
 
 
 async def detect_controller_type_by_api_probe(
-    session: aiohttp.ClientSession, host: str, port: int, verify_ssl: bool = False
+    session: aiohttp.ClientSession, host: str, port: int, verify_ssl: bool = True, ssl_fingerprint: str | None = None
 ) -> ControllerType | None:
     """Probe API endpoints to detect controller type (requires authenticated session).
 
@@ -70,7 +72,7 @@ async def detect_controller_type_by_api_probe(
         ControllerType.UNIFI_OS or ControllerType.STANDALONE if detected, None otherwise.
     """
     url_base = f"https://{host}:{port}"
-    ssl_context = None if verify_ssl else False
+    ssl_context = ssl_setting(verify_ssl, ssl_fingerprint)
 
     for path, expected_type in [
         ("/proxy/network/api/self/sites", ControllerType.UNIFI_OS),

@@ -169,7 +169,7 @@ class FirewallManager:
                 url,
                 params=params,
                 json=data,
-                ssl=self._connection.verify_ssl,
+                ssl=self._connection.ssl,
                 timeout=timeout,
                 allow_redirects=False,
             ) as resp:

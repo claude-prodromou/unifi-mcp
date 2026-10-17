@@ -45,6 +45,14 @@ from unifi_core.support_bundle import (
     connectivity_probe_result,
 )
 from unifi_core.support_transport import no_retry_support_request
+from unifi_core.tls import (
+    SslSetting,
+    certificate_error_hint,
+    is_certificate_error,
+    ssl_setting,
+    tls_mode,
+    warn_if_unverified,
+)
 
 logger = logging.getLogger("unifi-network-mcp")
 
@@ -145,6 +153,7 @@ async def detect_unifi_os_pre_login(
     session: aiohttp.ClientSession,
     base_url: str,
     timeout: int = 5,
+    ssl: SslSetting = True,
 ) -> Optional[bool]:
     """
     Detect UniFi OS BEFORE authentication using unauthenticated probes.
@@ -161,6 +170,9 @@ async def detect_unifi_os_pre_login(
         session: Active aiohttp.ClientSession
         base_url: Base URL of controller (e.g., 'https://192.168.1.1:443')
         timeout: Detection timeout in seconds (default: 5)
+        ssl: The connection's TLS setting from :func:`unifi_core.tls.ssl_setting`.
+             The probe runs before credentials are sent, but a probe answered by an
+             impostor picks the login endpoint the credentials then go to.
 
     Returns:
         True: UniFi OS detected (use /api/auth/login)
@@ -173,7 +185,7 @@ async def detect_unifi_os_pre_login(
         # Probe 1: GET base URL without following redirects
         # UniFi OS typically returns 200 OK with the web UI
         # Standalone controllers often redirect to /manage or return different status
-        async with session.get(base_url, timeout=client_timeout, ssl=False, allow_redirects=False) as response:
+        async with session.get(base_url, timeout=client_timeout, ssl=ssl, allow_redirects=False) as response:
             logger.debug("Pre-login probe %s: status=%s", base_url, response.status)
 
             if response.status == 200:
@@ -205,6 +217,7 @@ async def detect_with_retry(
     max_retries: int = 3,
     timeout: int = 5,
     pre_login: bool = False,
+    ssl: SslSetting = True,
 ) -> Optional[bool]:
     """
     Detect UniFi OS with exponential backoff retry.
@@ -216,6 +229,7 @@ async def detect_with_retry(
         timeout: Detection timeout per attempt in seconds (default: 5)
         pre_login: If True, use unauthenticated detection for auth endpoint selection.
                    If False, use authenticated detection for API path verification.
+        ssl: TLS setting passed to every probe (see :mod:`unifi_core.tls`).
 
     Returns:
         True: UniFi OS detected
@@ -232,7 +246,7 @@ async def detect_with_retry(
 
     for attempt in range(max_retries):
         try:
-            result = await detect_func(session, base_url, timeout)
+            result = await detect_func(session, base_url, timeout, ssl=ssl)
             if result is not None:
                 return result
         except RequestBudgetSpent:
@@ -255,6 +269,7 @@ async def _probe_endpoint(
     url: str,
     timeout: aiohttp.ClientTimeout,
     endpoint_name: str,
+    ssl: SslSetting = True,
 ) -> bool:
     """
     Probe a single UniFi endpoint to check if it responds successfully.
@@ -264,6 +279,7 @@ async def _probe_endpoint(
         url: Full URL to probe
         timeout: Request timeout configuration
         endpoint_name: Human-readable name for logging (e.g., "UniFi OS", "standard")
+        ssl: TLS setting for the request (see :mod:`unifi_core.tls`)
 
     Returns:
         True if endpoint responds with 200 and valid JSON containing "data" key
@@ -272,7 +288,7 @@ async def _probe_endpoint(
     try:
         logger.debug("Probing %s endpoint: %s", endpoint_name, url)
 
-        async with session.get(url, timeout=timeout, ssl=False) as response:
+        async with session.get(url, timeout=timeout, ssl=ssl) as response:
             if response.status == 200:
                 try:
                     data = await response.json()
@@ -294,7 +310,7 @@ async def _probe_endpoint(
 
 
 async def detect_unifi_os_proactively(
-    session: aiohttp.ClientSession, base_url: str, timeout: int = 5
+    session: aiohttp.ClientSession, base_url: str, timeout: int = 5, ssl: SslSetting = True
 ) -> Optional[bool]:
     """
     Detect if controller is UniFi OS by testing endpoint variants.
@@ -306,6 +322,7 @@ async def detect_unifi_os_proactively(
         session: Active aiohttp.ClientSession for making requests
         base_url: Base URL of controller (e.g., 'https://192.168.1.1:443')
         timeout: Detection timeout in seconds (default: 5)
+        ssl: TLS setting for both probes (see :mod:`unifi_core.tls`)
 
     Returns:
         True: UniFi OS detected (requires /proxy/network prefix)
@@ -324,8 +341,8 @@ async def detect_unifi_os_proactively(
     unifi_os_url = f"{base_url}/proxy/network/api/self/sites"
     standard_url = f"{base_url}/api/self/sites"
 
-    unifi_os_result = await _probe_endpoint(session, unifi_os_url, client_timeout, "UniFi OS")
-    standard_result = await _probe_endpoint(session, standard_url, client_timeout, "standard")
+    unifi_os_result = await _probe_endpoint(session, unifi_os_url, client_timeout, "UniFi OS", ssl=ssl)
+    standard_result = await _probe_endpoint(session, standard_url, client_timeout, "standard", ssl=ssl)
 
     # Determine result based on probe outcomes
     if unifi_os_result and standard_result:
@@ -359,13 +376,21 @@ class ConnectionManager:
         password: str,
         port: int = 443,
         site: str = "default",
-        verify_ssl: bool = False,
+        verify_ssl: bool = True,
         cache_timeout: int = 30,
         max_retries: int = 3,
         retry_delay: int = 5,
         auth: UniFiAuth | None = None,
+        ssl_fingerprint: str | None = None,
     ):
-        """Initialize the Connection Manager."""
+        """Initialize the Connection Manager.
+
+        ``ssl_fingerprint`` pins the controller certificate by SHA-256 and takes
+        precedence over ``verify_ssl``; see :mod:`unifi_core.tls`.
+
+        Raises:
+            ValueError: ``ssl_fingerprint`` is set but malformed.
+        """
         _silence_aiounifi_logs()
         self.host = host
         self.username = username
@@ -373,6 +398,8 @@ class ConnectionManager:
         self.port = port
         self.site = site
         self.verify_ssl = verify_ssl
+        self.ssl_fingerprint = ssl_fingerprint
+        warn_if_unverified(logger, ssl_setting(verify_ssl, ssl_fingerprint), product="Network", env_prefix="NETWORK")
         self.cache_timeout = cache_timeout
         self._max_retries = max_retries
         self._retry_delay = retry_delay
@@ -416,6 +443,11 @@ class ConnectionManager:
         """
 
     @property
+    def ssl(self) -> SslSetting:
+        """The aiohttp ``ssl=`` value for every controller request (see :mod:`unifi_core.tls`)."""
+        return ssl_setting(self.verify_ssl, self.ssl_fingerprint)
+
+    @property
     def url_base(self) -> str:
         proto = "https"
         return f"{proto}://{self.host}:{self.port}"
@@ -425,6 +457,8 @@ class ConnectionManager:
         name = type(error).__name__
         if self._is_terminal_auth_error(error):
             return f"{name}: check credentials and MFA/TOTP configuration."
+        if is_certificate_error(error):
+            return f"{name}: {certificate_error_hint(env_prefix='NETWORK')}"
         if self._is_unreachable_error(error):
             return (
                 f"{name}: cannot reach the controller; "
@@ -511,6 +545,8 @@ class ConnectionManager:
         category = ErrorCategory.AUTHENTICATION if self._is_mfa_required_error(error) else None
         self._support_attempt = connection_attempt_failed(error, category=category)
         self._last_connection_error = self._sanitize_connection_error(error)
+        if is_certificate_error(error):
+            logger.warning("%s", certificate_error_hint(env_prefix="NETWORK"))
         self._last_connection_failure = (
             self._last_connection_error,
             connection_failure("Connecting to the Network controller failed.", error, category=category),
@@ -653,7 +689,7 @@ class ConnectionManager:
         return {
             "initialized": self._initialized,
             "connected": bool(self._initialized and self.controller and session_available),
-            "tls_verification_enabled": self.verify_ssl,
+            "tls_verification_enabled": tls_mode(self.ssl) != "disabled",
             "last_attempt": dict(self._support_attempt),
             "session_available": session_available,
             "controller_type": controller_type,
@@ -683,7 +719,7 @@ class ConnectionManager:
                 "GET",
                 f"{self.url_base}{path}",
                 timeout=aiohttp.ClientTimeout(total=10),
-                ssl=False if not self.verify_ssl else None,
+                ssl=self.ssl,
                 allow_redirects=False,
                 middlewares=(no_retry_support_request,),
             ) as response:
@@ -821,7 +857,7 @@ class ConnectionManager:
         try:
             for prefix in prefixes:
                 async with session.get(
-                    f"{self.url_base}{prefix}/api/self/sites", ssl=self.verify_ssl, allow_redirects=False
+                    f"{self.url_base}{prefix}/api/self/sites", ssl=self.ssl, allow_redirects=False
                 ) as response:
                     if response.status == 429:
                         raise AuthenticationRateLimitError("API-key capability probe rate limited; retry later.")
@@ -847,7 +883,7 @@ class ConnectionManager:
                     password="",
                     port=self.port,
                     site=self.site,
-                    ssl_context=False if not self.verify_ssl else None,
+                    ssl_context=self.ssl,
                 )
                 self.controller = Controller(config=config)
                 self.controller.connectivity.is_unifi_os = bool(prefix)
@@ -912,7 +948,7 @@ class ConnectionManager:
                 async with session.get(
                     f"{self.url_base}{prefix}/integration{path}",
                     params=params,
-                    ssl=self.verify_ssl,
+                    ssl=self.ssl,
                     allow_redirects=False,
                 ) as response:
                     if response.status == 429:
@@ -1027,7 +1063,7 @@ class ConnectionManager:
                         await self._aiohttp_session.close()
                         self._aiohttp_session = None
 
-                    connector = aiohttp.TCPConnector(ssl=False if not self.verify_ssl else None)
+                    connector = aiohttp.TCPConnector(ssl=self.ssl)
                     # Charges every non-login request this session sends from a bounded read's
                     # own task; a no-op elsewhere, including the shared connect attempt.
                     self._aiohttp_session = aiohttp.ClientSession(
@@ -1061,6 +1097,7 @@ class ConnectionManager:
                                 max_retries=3,
                                 timeout=5,
                                 pre_login=True,  # Use unauthenticated detection
+                                ssl=self.ssl,
                             )
                             if detected is not None:
                                 self._unifi_os_override = detected
@@ -1083,7 +1120,7 @@ class ConnectionManager:
                         password=self.password,
                         port=self.port,
                         site=self.site,
-                        ssl_context=False if not self.verify_ssl else None,
+                        ssl_context=self.ssl,
                     )
 
                     self.controller = Controller(config=config)
@@ -1111,6 +1148,7 @@ class ConnectionManager:
                             max_retries=2,
                             timeout=5,
                             pre_login=False,  # Use authenticated detection
+                            ssl=self.ssl,
                         )
                         if post_login_detected is not None and post_login_detected != self._unifi_os_override:
                             # Post-login detection differs - update override

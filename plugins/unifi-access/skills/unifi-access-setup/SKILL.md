@@ -127,11 +127,18 @@ At least one auth path is required.
 ## Step 3: Optional Settings
 
 Ask whether to use defaults or customize:
-- Defaults: controller port `443`, Access API port `12445`, SSL verification `false`, lazy tool loading
+- Defaults: controller port `443`, Access API port `12445`, SSL verification `true`, lazy tool loading
 - Customize: ask for controller port (`UNIFI_ACCESS_PORT`), API port
-  (`UNIFI_ACCESS_API_PORT`), SSL verification (`UNIFI_ACCESS_VERIFY_SSL`), and
+  (`UNIFI_ACCESS_API_PORT`), SSL verification (`UNIFI_ACCESS_VERIFY_SSL`), a certificate pin
+  (`UNIFI_ACCESS_SSL_FINGERPRINT`), and
   tool registration mode (`UNIFI_TOOL_REGISTRATION_MODE`: `lazy`, `eager` or
   `meta_only`; the Claude Code option is `registration_mode`)
+
+Most consoles serve a self-signed certificate, which the default verification rejects. Unless the user
+says the certificate chains to a trusted CA, offer to pin it: have the user read the SHA-256 fingerprint
+(`openssl s_client -connect <host>:443 </dev/null | openssl x509 -noout -fingerprint -sha256`) and set
+`UNIFI_ACCESS_SSL_FINGERPRINT` (Claude Code option `ssl_fingerprint`). Set `UNIFI_ACCESS_VERIFY_SSL=false` only
+if the user asks to turn verification off. See `docs/tls-verification.md`.
 
 ## Step 4: Permission Configuration
 
