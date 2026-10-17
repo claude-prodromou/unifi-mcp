@@ -44,12 +44,11 @@ EMPTY_IS_UNSET = re.compile(
     r"^UNIFI_(?:NETWORK|PROTECT|ACCESS)_(?:HOST|USERNAME|(?:PASSWORD|API_KEY)(?:_FILE|_COMMAND)?)$"
 )
 RAW_SECRET = re.compile(r"^UNIFI_(?:NETWORK|PROTECT|ACCESS)_(?:PASSWORD|API_KEY)$")
-# Claude option defaults must match today's closed, preview-first, TLS-verified behaviour.
+# Claude option defaults must match today's closed, preview-first behaviour.
 SAFE_DEFAULTS = (
     (re.compile(r"^UNIFI_POLICY_(?:NETWORK|PROTECT|ACCESS)_(?:CREATE|UPDATE|DELETE)$"), False),
     (re.compile(r"^UNIFI_(?:NETWORK|PROTECT|ACCESS)_TOOL_PERMISSION_MODE$"), "confirm"),
     (re.compile(r"^UNIFI_TOOL_REGISTRATION_MODE$"), "lazy"),
-    (re.compile(r"^UNIFI_(?:NETWORK|PROTECT|ACCESS)_VERIFY_SSL$"), True),
 )
 AGENT_PLUGINS_SCHEMA = "https://agent-plugins.org/schemas/"
 CODEX_INSTALL_POLICIES = {"AVAILABLE", "INSTALLED_BY_DEFAULT", "NOT_AVAILABLE"}

@@ -76,3 +76,7 @@ Earlier releases defaulted to `UNIFI_VERIFY_SSL=false`. If you never set the
 variable and your console uses its self-signed certificate, the server now fails
 to connect with a certificate error. Set `UNIFI_SSL_FINGERPRINT` as above, or set
 `UNIFI_VERIFY_SSL=false` to keep the old behaviour.
+
+The Claude Code plugin bundles still pass `verify_ssl=false` and offer no
+fingerprint option. They pin server releases that predate this setting, so the
+plugin defaults change only once compatible server releases are pinned.

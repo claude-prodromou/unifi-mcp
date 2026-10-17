@@ -179,16 +179,9 @@ bash <path-to-plugin>/scripts/set-env.sh --target <claude|codex|openclaw> \
 
 Optional values keep their defaults unless the user asks: port
 (`UNIFI_PROTECT_PORT`, default `443`), SSL verification
-(`UNIFI_PROTECT_VERIFY_SSL`, default `true`), a certificate pin
-(`UNIFI_PROTECT_SSL_FINGERPRINT`), and tool registration mode
+(`UNIFI_PROTECT_VERIFY_SSL`, default `false`), and tool registration mode
 (`UNIFI_TOOL_REGISTRATION_MODE`: `lazy` by default, `eager` or `meta_only`; the
 Claude Code option is `registration_mode`).
-
-Most consoles serve a self-signed certificate, which the default verification rejects. Unless the user
-says the certificate chains to a trusted CA, offer to pin it: have the user read the SHA-256 fingerprint
-(`openssl s_client -connect <host>:443 </dev/null | openssl x509 -noout -fingerprint -sha256`) and set
-`UNIFI_PROTECT_SSL_FINGERPRINT` (Claude Code option `ssl_fingerprint`). Set `UNIFI_PROTECT_VERIFY_SSL=false` only
-if the user asks to turn verification off. See `docs/tls-verification.md`.
 
 Add optional values and policy variables to the same command. Per-category
 overrides apply to Codex and OpenClaw only, for example:

@@ -115,7 +115,7 @@ class TestCertificateError:
 
 @pytest.fixture(scope="module")
 def self_signed(tmp_path_factory):
-    x509 = pytest.importorskip("cryptography.x509")
+    from cryptography import x509
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import ec
     from cryptography.x509.oid import NameOID
