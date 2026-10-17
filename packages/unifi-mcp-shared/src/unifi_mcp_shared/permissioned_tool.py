@@ -18,7 +18,7 @@ from unifi_mcp_shared.output_schema import apply_unifi_tool_response_signature, 
 from unifi_mcp_shared.tool_index import normalize_tool_annotations
 
 # Registration kwargs this package understands and FastMCP does not.
-_PERMISSION_KWARGS = ("permission_category", "permission_action", "auth", "input_schema")
+_PROJECT_TOOL_KWARGS = ("permission_category", "permission_action", "auth", "input_schema", "output_schema")
 
 
 def require_policy_check_for_mutating_tool(
@@ -54,7 +54,8 @@ def create_import_time_tool_decorator(original_tool_decorator: Callable, *, logg
     """Create the stand-in ``server.tool`` used until main.py installs ``permissioned_tool``.
 
     Tool modules can be imported without main.py (tests, tooling), so this accepts
-    the permission kwargs FastMCP does not understand. It cannot check a policy
+    the project-level kwargs FastMCP does not understand (the permission kwargs,
+    ``input_schema`` and ``output_schema``) and drops them before registering. It cannot check a policy
     gate, so a tool that declares ``permission_category`` and ``permission_action``
     is registered with MCP fail-closed: calls return a denial instead of running
     ungated. The function is returned undecorated, so direct calls from tests are
@@ -64,7 +65,7 @@ def create_import_time_tool_decorator(original_tool_decorator: Callable, *, logg
     def placeholder_tool(*d_args, **d_kwargs):
         category = d_kwargs.get("permission_category")
         action = d_kwargs.get("permission_action")
-        for key in _PERMISSION_KWARGS:
+        for key in _PROJECT_TOOL_KWARGS:
             d_kwargs.pop(key, None)
 
         def decorator(func):

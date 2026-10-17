@@ -551,6 +551,28 @@ class TestImportTimeToolDecorator:
         result = await server.call_tool("list_tool", {})
         assert '"success": true' in result.content[0].text
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "permission_kwargs",
+        [{}, {"permission_category": "cat", "permission_action": "read"}],
+        ids=["ungated", "gated"],
+    )
+    async def test_accepts_project_level_schema_kwargs(self, permission_kwargs):
+        server = FastMCP("test")
+        placeholder = create_import_time_tool_decorator(server.tool, logger=logging.getLogger("test"))
+
+        @placeholder(
+            name="schema_tool",
+            annotations=READ_ONLY,
+            input_schema={"type": "object", "properties": {}},
+            output_schema={"type": "object"},
+            **permission_kwargs,
+        )
+        async def schema_tool() -> dict:
+            return {"success": True}
+
+        assert "schema_tool" in {t.name for t in await server.list_tools()}
+
     def test_rejects_ungated_tool_not_annotated_read_only(self):
         server = FastMCP("test")
         placeholder = create_import_time_tool_decorator(server.tool, logger=logging.getLogger("test"))
