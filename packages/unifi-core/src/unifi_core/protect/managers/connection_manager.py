@@ -39,6 +39,7 @@ from unifi_core.support_transport import no_retry_support_request
 from unifi_core.tls import (
     SslSetting,
     certificate_error_hint,
+    certificate_safe_middleware,
     is_certificate_error,
     ssl_setting,
     tls_mode,
@@ -307,17 +308,26 @@ class ProtectConnectionManager:
         session opens. ``verify_ssl=True`` keeps uiprotect from overriding it
         with a per-request ``ssl=False``. A fresh client is built per connect
         attempt and ``close_session`` closes both sessions with it.
+
+        The sessions are supplied whenever certificates are checked, pinned or
+        not, so their middleware can replace a failed check before uiprotect
+        wraps it as ``NvrError("Error requesting data from <host>: <error>")``.
         """
         setting = self.ssl
-        if not isinstance(setting, aiohttp.Fingerprint):
-            return {"verify_ssl": setting}
+        if setting is False:
+            return {"verify_ssl": False}
+        middlewares = (certificate_safe_middleware(env_prefix="PROTECT"),)
         return {
             "verify_ssl": True,
             # Same cookie jar uiprotect builds for its own private session.
             "session": aiohttp.ClientSession(
-                connector=aiohttp.TCPConnector(ssl=setting), cookie_jar=aiohttp.CookieJar(unsafe=True)
+                connector=aiohttp.TCPConnector(ssl=setting),
+                cookie_jar=aiohttp.CookieJar(unsafe=True),
+                middlewares=middlewares,
             ),
-            "public_api_session": aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=setting)),
+            "public_api_session": aiohttp.ClientSession(
+                connector=aiohttp.TCPConnector(ssl=setting), middlewares=middlewares
+            ),
         }
 
     async def _connect_once(self) -> None:

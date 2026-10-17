@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import re
+from typing import Any
 
 import aiohttp
 
@@ -147,3 +148,36 @@ def certificate_failure(error: BaseException, *, env_prefix: str) -> Certificate
     ``str(error)`` is kept.
     """
     return CertificateVerificationError(f"{type(error).__name__}: {certificate_error_hint(env_prefix=env_prefix)}")
+
+
+def safe_error_text(error: BaseException, *, env_prefix: str) -> Any:
+    """``error`` itself, or the fixed certificate text when it is a failed certificate check.
+
+    For log calls that format an exception whose text is otherwise safe to
+    record; a certificate failure names the controller and both fingerprints.
+    """
+    if is_certificate_error(error) and not isinstance(error, CertificateVerificationError):
+        return certificate_failure(error, env_prefix=env_prefix)
+    return error
+
+
+def certificate_safe_middleware(*, env_prefix: str) -> aiohttp.ClientMiddlewareType:
+    """Session middleware that replaces a failed certificate check with :class:`CertificateVerificationError`.
+
+    Installed on every controller session so the translation happens below the
+    SDKs. aiounifi, uiprotect and py-unifi-access each wrap an aiohttp
+    ``ClientError`` in their own exception with the controller URL and the raw
+    error in its text. :class:`CertificateVerificationError` is not a
+    ``ClientError``, so it passes through them unwrapped, and it is raised
+    outside the ``except`` block, so no traceback renders the original.
+    """
+
+    async def middleware(request: aiohttp.ClientRequest, handler: aiohttp.ClientHandlerType) -> aiohttp.ClientResponse:
+        failure: CertificateVerificationError | None = None
+        try:
+            return await handler(request)
+        except (aiohttp.ClientConnectorCertificateError, aiohttp.ServerFingerprintMismatch) as error:
+            failure = certificate_failure(error, env_prefix=env_prefix)
+        raise failure
+
+    return middleware

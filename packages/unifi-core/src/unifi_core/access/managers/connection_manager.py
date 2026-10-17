@@ -50,6 +50,7 @@ from unifi_core.support_transport import no_retry_support_request
 from unifi_core.tls import (
     SslSetting,
     certificate_error_hint,
+    certificate_safe_middleware,
     is_certificate_error,
     ssl_setting,
     tls_mode,
@@ -454,6 +455,17 @@ class AccessConnectionManager:
             )
         return AccessUnavailableError(detail)
 
+    @staticmethod
+    def _session_middlewares() -> tuple[aiohttp.ClientMiddlewareType, ...]:
+        """Middlewares for both controller sessions.
+
+        A failed certificate check is replaced with a fixed-text
+        ``CertificateVerificationError`` before py-unifi-access or the proxy
+        helpers see it: the aiohttp error names the controller and, for a pin
+        mismatch, both fingerprints, and every tool returns ``str(e)``.
+        """
+        return (certificate_safe_middleware(env_prefix="ACCESS"),)
+
     async def _try_api_client(self) -> None:
         """Attempt to initialise the py-unifi-access API client."""
         if not self.authentication_status.configured(AuthMethod.API_KEY_ONLY):
@@ -466,7 +478,7 @@ class AccessConnectionManager:
             from unifi_access_api import UnifiAccessApiClient
 
             connector = aiohttp.TCPConnector(ssl=self._ssl_context)
-            self._api_session = aiohttp.ClientSession(connector=connector)
+            self._api_session = aiohttp.ClientSession(connector=connector, middlewares=self._session_middlewares())
             self._api_client = UnifiAccessApiClient(
                 host=f"https://{self.host}:{self._api_port}",
                 api_token=self._api_key,
@@ -509,6 +521,7 @@ class AccessConnectionManager:
             self._proxy_session = aiohttp.ClientSession(
                 connector=aiohttp.TCPConnector(ssl=self._ssl_context),
                 cookie_jar=aiohttp.CookieJar(unsafe=True),
+                middlewares=self._session_middlewares(),
             )
             await self._proxy_login()
             self._proxy_available = True

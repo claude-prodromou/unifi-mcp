@@ -22,10 +22,20 @@ class TestProtect:
 
         return ProtectConnectionManager
 
-    def test_defaults_to_verified(self, manager_cls):
+    async def test_defaults_to_verified(self, manager_cls):
         manager = manager_cls("192.0.2.1", "admin", "secret")
         assert manager.ssl is True
-        assert manager._client_tls_options() == {"verify_ssl": True}
+        options = manager._client_tls_options()
+        try:
+            assert options["verify_ssl"] is True
+            # Supplied even when not pinned, so their middleware can replace a
+            # failed CA check before uiprotect wraps its text in NvrError.
+            for name in ("session", "public_api_session"):
+                assert _connector_ssl(options[name]) is True
+                assert len(options[name]._middlewares) == 1
+        finally:
+            await options["session"].close()
+            await options["public_api_session"].close()
         assert manager.support_status()["tls_verification_enabled"] is True
 
     def test_disabled_is_passed_through_and_warned(self, manager_cls, caplog):

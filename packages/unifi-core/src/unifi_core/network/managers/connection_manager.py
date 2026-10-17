@@ -48,7 +48,9 @@ from unifi_core.support_transport import no_retry_support_request
 from unifi_core.tls import (
     SslSetting,
     certificate_error_hint,
+    certificate_safe_middleware,
     is_certificate_error,
+    safe_error_text,
     ssl_setting,
     tls_mode,
     warn_if_unverified,
@@ -202,11 +204,11 @@ async def detect_unifi_os_pre_login(
     except asyncio.TimeoutError:
         logger.debug("Pre-login detection: timeout")
     except aiohttp.ClientError as e:
-        logger.debug("Pre-login detection failed: %s", e)
+        logger.debug("Pre-login detection failed: %s", safe_error_text(e, env_prefix="NETWORK"))
     except RequestBudgetSpent:
         raise
     except Exception as e:
-        logger.debug("Pre-login detection unexpected error: %s", e)
+        logger.debug("Pre-login detection unexpected error: %s", safe_error_text(e, env_prefix="NETWORK"))
 
     return None
 
@@ -259,7 +261,9 @@ async def detect_with_retry(
                 )
                 await asyncio.sleep(delay)
             else:
-                logger.warning("Detection failed after %s attempts: %s", max_retries, e)
+                logger.warning(
+                    "Detection failed after %s attempts: %s", max_retries, safe_error_text(e, env_prefix="NETWORK")
+                )
 
     return None
 
@@ -300,11 +304,13 @@ async def _probe_endpoint(
     except asyncio.TimeoutError:
         logger.debug("%s endpoint probe timed out", endpoint_name)
     except aiohttp.ClientError as e:
-        logger.debug("%s endpoint probe failed: %s", endpoint_name, e)
+        logger.debug("%s endpoint probe failed: %s", endpoint_name, safe_error_text(e, env_prefix="NETWORK"))
     except RequestBudgetSpent:
         raise
     except Exception as e:
-        logger.debug("Unexpected error probing %s endpoint: %s", endpoint_name, e)
+        logger.debug(
+            "Unexpected error probing %s endpoint: %s", endpoint_name, safe_error_text(e, env_prefix="NETWORK")
+        )
 
     return False
 
@@ -446,6 +452,22 @@ class ConnectionManager:
     def ssl(self) -> SslSetting:
         """The aiohttp ``ssl=`` value for every controller request (see :mod:`unifi_core.tls`)."""
         return ssl_setting(self.verify_ssl, self.ssl_fingerprint)
+
+    def _new_session(self) -> aiohttp.ClientSession:
+        """The shared controller session, carrying this manager's TLS setting.
+
+        The charge middleware bills every non-login request this session sends
+        from a bounded read's own task; a no-op elsewhere, including the shared
+        connect attempt. The certificate middleware replaces a failed check
+        before aiounifi wraps it as ``RequestError("Error requesting data from
+        <url>: <error>")``, whose text names the controller and both pinned
+        fingerprints.
+        """
+        return aiohttp.ClientSession(
+            connector=aiohttp.TCPConnector(ssl=self.ssl),
+            cookie_jar=aiohttp.CookieJar(unsafe=True),
+            middlewares=(charged_session_middleware, certificate_safe_middleware(env_prefix="NETWORK")),
+        )
 
     @property
     def url_base(self) -> str:
@@ -1063,14 +1085,7 @@ class ConnectionManager:
                         await self._aiohttp_session.close()
                         self._aiohttp_session = None
 
-                    connector = aiohttp.TCPConnector(ssl=self.ssl)
-                    # Charges every non-login request this session sends from a bounded read's
-                    # own task; a no-op elsewhere, including the shared connect attempt.
-                    self._aiohttp_session = aiohttp.ClientSession(
-                        connector=connector,
-                        cookie_jar=aiohttp.CookieJar(unsafe=True),
-                        middlewares=(charged_session_middleware,),
-                    )
+                    self._aiohttp_session = self._new_session()
 
                     # Controller type detection/override configuration
                     # Two-phase detection:
