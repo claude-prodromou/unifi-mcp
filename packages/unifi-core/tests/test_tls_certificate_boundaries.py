@@ -136,6 +136,18 @@ class TestNetworkDetection:
                 await detect_with_retry(session, "https://unifi.test", max_retries=2, pre_login=True, ssl=True)
         _assert_absent(_rendered(caplog))
 
+    async def test_exported_pre_login_helper_logs_fixed_text(self, caplog):
+        from unifi_core import detect_controller_type_pre_login
+
+        with (
+            patch("aiohttp.client.TCPConnector", _StalePinConnector),
+            caplog.at_level(logging.DEBUG, logger="unifi_core.detection"),
+        ):
+            assert await detect_controller_type_pre_login(HOST, PORT, ssl_fingerprint=EXPECTED.hex()) is None
+        assert "ServerFingerprintMismatch" in _rendered(caplog)
+        assert "UNIFI_NETWORK_SSL_FINGERPRINT" in _rendered(caplog)
+        _assert_absent(_rendered(caplog))
+
 
 class TestNetworkRequests:
     async def test_manager_session_replaces_the_failure(self, network_manager):
@@ -189,6 +201,39 @@ class TestNetworkRequests:
         # failure itself must add nothing from the certificate check.
         _assert_absent(_rendered(caplog), FINGERPRINT_MARKERS)
         assert "ServerFingerprintMismatch" in _rendered(caplog)
+
+    @pytest.mark.parametrize("controller_type", ["proxy", "auto"])
+    async def test_key_only_initialize_records_fixed_text(self, monkeypatch, caplog, controller_type):
+        from unifi_core.auth import UniFiAuth
+        from unifi_core.network.managers.connection_manager import ConnectionManager
+
+        monkeypatch.setenv("UNIFI_CONTROLLER_TYPE", controller_type)
+        manager = ConnectionManager(
+            HOST, "", "", port=PORT, ssl_fingerprint=EXPECTED.hex(), auth=UniFiAuth(api_key="synthetic-key")
+        )
+        with patch("aiohttp.client.TCPConnector", _StalePinConnector), caplog.at_level(logging.DEBUG):
+            try:
+                assert await manager.initialize() is False
+                error = manager.last_connection_error
+            finally:
+                await manager.cleanup()
+        assert "UNIFI_NETWORK_SSL_FINGERPRINT" in str(error)
+        _assert_absent(str(error))
+        assert "UNIFI_NETWORK_SSL_FINGERPRINT" in _rendered(caplog)
+        _assert_absent(_rendered(caplog))
+
+    async def test_integration_request_raises_fixed_text(self, caplog):
+        from unifi_core.auth import UniFiAuth
+        from unifi_core.network.managers.connection_manager import ConnectionManager
+
+        manager = ConnectionManager(
+            HOST, "", "", port=PORT, ssl_fingerprint=EXPECTED.hex(), auth=UniFiAuth(api_key="synthetic-key")
+        )
+        with patch("aiohttp.client.TCPConnector", _StalePinConnector), caplog.at_level(logging.DEBUG):
+            with pytest.raises(CertificateVerificationError) as excinfo:
+                await manager.request_integration("/v1/sites")
+        _assert_safe(excinfo.value, "NETWORK")
+        _assert_absent(_rendered(caplog))
 
 
 # ---------------------------------------------------------------------------

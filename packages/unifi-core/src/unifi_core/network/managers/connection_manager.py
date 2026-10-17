@@ -46,6 +46,7 @@ from unifi_core.support_bundle import (
 )
 from unifi_core.support_transport import no_retry_support_request
 from unifi_core.tls import (
+    CertificateVerificationError,
     SslSetting,
     certificate_error_hint,
     certificate_safe_middleware,
@@ -870,12 +871,7 @@ class ConnectionManager:
         await self._discard_connection()
         mode = resolve_controller_type()
         prefixes = ["/proxy/network"] if mode == "proxy" else [""] if mode == "direct" else ["/proxy/network", ""]
-        session = await self.unifi_auth.get_api_key_session(
-            self.url_base,
-            cookie_jar=aiohttp.DummyCookieJar(),
-            timeout=aiohttp.ClientTimeout(total=10),
-            middlewares=(self._key_read_transport,),
-        )
+        session = await self._new_api_key_session(self._key_read_transport)
         try:
             for prefix in prefixes:
                 async with session.get(
@@ -925,7 +921,13 @@ class ConnectionManager:
             return False
         except Exception as error:
             logger.warning("API-key legacy capability probe failed: %s", type(error).__name__)
-            self._last_connection_error = "API-key capability probe failed; verify controller connectivity and API key."
+            if is_certificate_error(error):
+                # The Integration API is on the same TLS endpoint; it would fail the same check.
+                self._record_key_certificate_failure(error)
+            else:
+                self._last_connection_error = (
+                    "API-key capability probe failed; verify controller connectivity and API key."
+                )
             return False
         finally:
             if self._aiohttp_session is not session:
@@ -948,6 +950,9 @@ class ConnectionManager:
             except AuthenticationRateLimitError:
                 self._last_connection_error = "API-key capability probe rate limited; retry later."
                 return False
+            except CertificateVerificationError as error:
+                self._record_key_certificate_failure(error)
+                return False
             except UniFiAuthError:
                 continue
         self._integration_prefix = None
@@ -955,6 +960,24 @@ class ConnectionManager:
             "No usable Network authentication path. Verify the API key or session credentials."
         )
         return False
+
+    async def _new_api_key_session(self, *middlewares) -> aiohttp.ClientSession:
+        """An API-key controller session with the certificate middleware outermost.
+
+        aiounifi keeps the legacy key session as its own and wraps a transport
+        failure as ``RequestError("Error requesting data from <url>: <error>")``;
+        the middleware replaces a failed certificate check before that happens.
+        """
+        return await self.unifi_auth.get_api_key_session(
+            self.url_base,
+            cookie_jar=aiohttp.DummyCookieJar(),
+            timeout=aiohttp.ClientTimeout(total=10),
+            middlewares=(certificate_safe_middleware(env_prefix="NETWORK"), *middlewares),
+        )
+
+    def _record_key_certificate_failure(self, error: BaseException) -> None:
+        self._last_connection_error = f"{type(error).__name__}: {certificate_error_hint(env_prefix='NETWORK')}"
+        logger.warning("%s", certificate_error_hint(env_prefix="NETWORK"))
 
     async def request_integration(self, path: str, params: dict | None = None) -> dict:
         """Bounded public inventory GET; never reuse cookies or forward redirects."""
@@ -964,9 +987,7 @@ class ConnectionManager:
             raise ValueError("Invalid Network Integration API path")
         prefix = self._integration_prefix if self._integration_prefix is not None else "/proxy/network"
         try:
-            async with await self.unifi_auth.get_api_key_session(
-                self.url_base, cookie_jar=aiohttp.DummyCookieJar(), timeout=aiohttp.ClientTimeout(total=10)
-            ) as session:
+            async with await self._new_api_key_session() as session:
                 async with session.get(
                     f"{self.url_base}{prefix}/integration{path}",
                     params=params,
@@ -984,7 +1005,7 @@ class ConnectionManager:
                     if not isinstance(body, dict):
                         raise UniFiAuthError("Network Integration API returned an invalid response.")
                     return body
-        except (UniFiAuthError, AuthenticationRateLimitError):
+        except (UniFiAuthError, AuthenticationRateLimitError, CertificateVerificationError):
             raise
         except Exception as error:
             raise UniFiAuthError(
