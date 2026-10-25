@@ -12,6 +12,7 @@ from unifi_core.network.managers.connection_manager import (
     controller_error_code,
     response_status,
 )
+from unifi_core.request_paths import object_id
 
 logger = logging.getLogger("unifi-network-mcp")
 
@@ -279,7 +280,9 @@ class ClientManager:
         Controller errors propagate as raised; the caller decides whether
         ``api.err.UnknownUser`` means not-found.
         """
-        response = await self._connection.request(ApiRequest(method="get", path=f"/stat/user/{path_mac}"))
+        response = await self._connection.request(
+            ApiRequest(method="get", path=f"/stat/user/{object_id(path_mac, 'client MAC')}")
+        )
         if not isinstance(response, list) or (response and not isinstance(response[0], dict)):
             raise UniFiOperationError(f"/stat/user reply had unexpected shape {type(response).__name__}")
         if not response:
@@ -352,14 +355,18 @@ class ClientManager:
             # Use REST endpoint (consistent with set_client_ip_settings).
             # Fall back to legacy /upd/user/ for older standalone controllers.
             try:
-                api_request = ApiRequest(method="put", path=f"/rest/user/{client_id}", data={"name": name})
+                api_request = ApiRequest(
+                    method="put", path=f"/rest/user/{object_id(client_id, 'client')}", data={"name": name}
+                )
                 await self._connection.request(api_request)
             except Exception as e:
                 logger.debug(
                     "REST endpoint failed for rename, falling back to legacy /upd/user/ for [redacted]: %s",
                     type(e).__name__,
                 )
-                api_request = ApiRequest(method="put", path=f"/upd/user/{client_id}", data={"name": name})
+                api_request = ApiRequest(
+                    method="put", path=f"/upd/user/{object_id(client_id, 'client')}", data={"name": name}
+                )
                 await self._connection.request(api_request)
             logger.info("Rename command sent for client [redacted] to '[redacted]'")
             self._connection._invalidate_cache(f"{CACHE_PREFIX_CLIENTS}")
@@ -546,7 +553,7 @@ class ClientManager:
                 try:
                     note_request = ApiRequest(
                         method="put",
-                        path=f"/rest/user/{client_id}",
+                        path=f"/rest/user/{object_id(client_id, 'client')}",
                         data=note_payload,
                     )
                     await self._connection.request(note_request)
@@ -584,7 +591,7 @@ class ClientManager:
 
             api_request = ApiRequest(
                 method="put",
-                path=f"/rest/user/{client_id}",
+                path=f"/rest/user/{object_id(client_id, 'client')}",
                 data=payload,
             )
             await self._connection.request(api_request)
@@ -666,7 +673,9 @@ class ClientManager:
             if not persisted.get("noted"):
                 noted = dict(persisted)
                 noted["noted"] = True
-                await self._connection.request(ApiRequest(method="put", path=f"/rest/user/{client_id}", data=noted))
+                await self._connection.request(
+                    ApiRequest(method="put", path=f"/rest/user/{object_id(client_id, 'client')}", data=noted)
+                )
                 persisted = await self._get_user_by_mac(client_mac)
                 if persisted is None or not persisted.get("noted"):
                     raise FixedApOperationError("Controller did not persist the client note before fixed AP update")
@@ -677,7 +686,9 @@ class ClientManager:
             # Empty-string and null MAC values are rejected on Network 10.6.
             if fixed_ap_enabled:
                 update["fixed_ap_mac"] = ap_mac
-            await self._connection.request(ApiRequest(method="put", path=f"/rest/user/{client_id}", data=update))
+            await self._connection.request(
+                ApiRequest(method="put", path=f"/rest/user/{object_id(client_id, 'client')}", data=update)
+            )
             self._connection._invalidate_cache(f"{CACHE_PREFIX_CLIENTS}")
 
             readback = await self._get_user_by_mac(client_mac)

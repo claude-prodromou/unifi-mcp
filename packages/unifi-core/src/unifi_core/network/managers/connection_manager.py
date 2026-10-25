@@ -34,6 +34,7 @@ from unifi_core.request_budget import (
     charged_session_middleware,
     prepaid_attempt,
 )
+from unifi_core.request_paths import check_request_path, is_safe_request_path
 from unifi_core.support_bundle import (
     ConnectivityProbe,
     ErrorCategory,
@@ -902,7 +903,7 @@ class ConnectionManager:
         """Bounded public inventory GET; never reuse cookies or forward redirects."""
         if not self.unifi_auth.has_api_key:
             raise UniFiAuthError("Network Integration API requires UNIFI_NETWORK_API_KEY or UNIFI_API_KEY.")
-        if not path.startswith("/v1/") or ".." in path or "?" in path or "#" in path:
+        if not path.startswith("/v1/") or "?" in path or not is_safe_request_path(path):
             raise ValueError("Invalid Network Integration API path")
         prefix = self._integration_prefix if self._integration_prefix is not None else "/proxy/network"
         try:
@@ -1397,6 +1398,9 @@ class ConnectionManager:
 
     async def request(self, api_request: ApiRequest | ApiRequestV2, return_raw: bool = False) -> Any:
         """Request controller data, keeping settings failures safe for every caller."""
+        # Every Network manager reaches the controller through here, so this is
+        # the one place a re-targeting path can be refused for all of them.
+        check_request_path(api_request.path)
         try:
             return await self._request_with_reauthentication(api_request, return_raw=return_raw)
         except Exception as error:

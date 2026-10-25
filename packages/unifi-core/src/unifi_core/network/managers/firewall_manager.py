@@ -30,6 +30,7 @@ from unifi_core.network.models.firewall import (
     validate_policy_selectors,
     validate_zone_targeting,
 )
+from unifi_core.request_paths import object_id
 
 logger = logging.getLogger("unifi-network-mcp")
 
@@ -442,7 +443,7 @@ class FirewallManager:
 
             api_request = ApiRequestV2(
                 method="put",
-                path=f"/firewall-policies/{policy_id}",
+                path=f"/firewall-policies/{object_id(policy_id, 'firewall policy')}",
                 data=merged_data,
             )
             await self._connection.request(api_request)
@@ -652,7 +653,7 @@ class FirewallManager:
             raise ConnectionError("Not connected to controller")
         try:
             # Use V2 endpoint for deletion
-            api_request = ApiRequestV2(method="delete", path=f"/trafficroutes/{route_id}")
+            api_request = ApiRequestV2(method="delete", path=f"/trafficroutes/{object_id(route_id, 'traffic route')}")
             # A DELETE may commit before its response is lost; never retain a stale route cache.
             try:
                 await self._connection.request(api_request)
@@ -750,7 +751,7 @@ class FirewallManager:
 
             api_request = ApiRequest(
                 method="put",
-                path=f"/rest/portforward/{rule_id}",  # V1 endpoint path, corrected
+                path=f"/rest/portforward/{object_id(rule_id, 'port forward')}",  # V1 endpoint path, corrected
                 data=updated_data,
             )
 
@@ -879,7 +880,7 @@ class FirewallManager:
             # Use V1 endpoint as aiounifi does
             api_request = ApiRequest(
                 method="delete",
-                path=f"/rest/portforward/{rule_id}",
+                path=f"/rest/portforward/{object_id(rule_id, 'port forward')}",
             )
             await self._connection.request(api_request)
 
@@ -976,7 +977,9 @@ class FirewallManager:
         if not await self._connection.ensure_connected():
             raise ConnectionError("Not connected to controller")
         try:
-            api_request = ApiRequestV2(method="delete", path=f"/firewall-policies/{policy_id}")
+            api_request = ApiRequestV2(
+                method="delete", path=f"/firewall-policies/{object_id(policy_id, 'firewall policy')}"
+            )
             await self._connection.request(api_request)
 
             cache_key_true = f"{CACHE_PREFIX_FIREWALL_POLICIES}_True_{self._connection.site}"
@@ -1343,7 +1346,7 @@ class FirewallManager:
             raise ConnectionError("Not connected to controller")
 
         try:
-            api_request = ApiRequest(method="get", path=f"/rest/firewallgroup/{group_id}")
+            api_request = ApiRequest(method="get", path=f"/rest/firewallgroup/{object_id(group_id, 'firewall group')}")
             response = await self._connection.request(api_request)
             data = (
                 response
@@ -1418,7 +1421,9 @@ class FirewallManager:
                 return True
 
             merged = deep_merge(current, group_data)
-            api_request = ApiRequest(method="put", path=f"/rest/firewallgroup/{group_id}", data=merged)
+            api_request = ApiRequest(
+                method="put", path=f"/rest/firewallgroup/{object_id(group_id, 'firewall group')}", data=merged
+            )
             await self._connection.request(api_request)
 
             self._connection._invalidate_cache(CACHE_PREFIX_FIREWALL_GROUPS)
@@ -1440,7 +1445,9 @@ class FirewallManager:
             raise ConnectionError("Not connected to controller")
 
         try:
-            api_request = ApiRequest(method="delete", path=f"/rest/firewallgroup/{group_id}")
+            api_request = ApiRequest(
+                method="delete", path=f"/rest/firewallgroup/{object_id(group_id, 'firewall group')}"
+            )
             await self._connection.request(api_request)
 
             self._connection._invalidate_cache(CACHE_PREFIX_FIREWALL_GROUPS)
