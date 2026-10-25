@@ -30,6 +30,18 @@ describe("RelayObject location evidence meta-tool", () => {
     expect((result as any).error).toContain("UUID");
     expect(relay.sendToolCall).not.toHaveBeenCalled();
   });
+  it("reads only the locations an agent token is scoped to", async () => {
+    const evidenceTools = ["unifi_get_incident_evidence", "protect_get_incident_evidence"];
+    const relay = fakeRelay(["fixture-1", "fixture-2"], new Map([["fixture-1", evidenceTools], ["fixture-2", evidenceTools]]), null);
+    const scope = { readOnly: true, locations: ["fixture-1"] };
+
+    const outside = await relay.handleToolCall("unifi_location_timeline", { ...windowArgs, location_id: "fixture-2" }, scope);
+    expect(outside).toEqual({ success: false, error: expect.stringContaining('unknown location_id "fixture-2"') });
+    expect(relay.sendToolCall).not.toHaveBeenCalled();
+
+    await relay.handleToolCall("unifi_location_timeline", windowArgs, scope);
+    expect(new Set(relay.sendToolCall.mock.calls.map((call: any[]) => call[0]))).toEqual(new Set(["fixture-1"]));
+  });
   it("describes location_id as the location UUID in the tool input schema", async () => {
     const relay = fakeRelay([], new Map(), null);
     const tool = (await relay.getToolList("lazy")).find((entry: any) => entry.name === "unifi_location_timeline");
