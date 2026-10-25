@@ -299,6 +299,39 @@ class TestResolveHttpAuthToken:
         assert resolve_http_auth_token(env_prefix="NETWORK", logger=logging.getLogger("test")) == "f" * 40
 
     @pytest.mark.parametrize(
+        "var",
+        [
+            "UNIFI_MCP_HTTP_AUTH_TOKEN",
+            "UNIFI_NETWORK_MCP_HTTP_AUTH_TOKEN",
+            "UNIFI_MCP_HTTP_AUTH_TOKEN_FILE",
+            "UNIFI_NETWORK_MCP_HTTP_AUTH_TOKEN_COMMAND",
+        ],
+    )
+    def test_explicitly_empty_token_refuses_startup(self, monkeypatch, caplog, var):
+        monkeypatch.setenv(var, "")
+        with pytest.raises(SystemExit) as exc:
+            resolve_http_auth_token(env_prefix="NETWORK", logger=logging.getLogger("test"), configured="c" * 40)
+        assert exc.value.code == bootstrap.EXIT_SECRET_UNRESOLVED
+        assert f"{var} is set but empty" in caplog.text
+
+    def test_empty_server_level_falls_through_to_shared(self, monkeypatch):
+        monkeypatch.setenv("UNIFI_NETWORK_MCP_HTTP_AUTH_TOKEN", "")
+        monkeypatch.setenv("UNIFI_MCP_HTTP_AUTH_TOKEN", "s" * 40)
+        assert resolve_http_auth_token(env_prefix="NETWORK", logger=logging.getLogger("test")) == "s" * 40
+
+    def test_config_value_used_only_without_environment(self, monkeypatch):
+        logger = logging.getLogger("test")
+        assert resolve_http_auth_token(env_prefix="NETWORK", logger=logger, configured="c" * 40) == "c" * 40
+        assert resolve_http_auth_token(env_prefix="NETWORK", logger=logger, configured="") is None
+        monkeypatch.setenv("UNIFI_MCP_HTTP_AUTH_TOKEN", "s" * 40)
+        assert resolve_http_auth_token(env_prefix="NETWORK", logger=logger, configured="c" * 40) == "s" * 40
+
+    def test_short_config_value_refuses_startup(self):
+        with pytest.raises(SystemExit) as exc:
+            resolve_http_auth_token(env_prefix="NETWORK", logger=logging.getLogger("test"), configured="short")
+        assert exc.value.code == bootstrap.EXIT_SECRET_UNRESOLVED
+
+    @pytest.mark.parametrize(
         ("value", "message"),
         [
             ("short-token", "11 characters; use at least 32"),

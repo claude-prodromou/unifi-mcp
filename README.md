@@ -77,7 +77,7 @@ UniFi MCP is a collection of [Model Context Protocol](https://modelcontextprotoc
 
 ## MCP HTTP Access
 
-MCP HTTP is unauthenticated and intended for trusted local clients. HTTP is disabled by default; when enabled, packages bind to loopback. Docker Compose enables it on the container network and publishes ports 3000–3002 on host `127.0.0.1`. Use an authenticated TLS proxy or Cloud Relay for remote access, and prevent direct access to the backend. See the [transport security model](SECURITY.md#mcp-transport-trust-boundary) and [HTTP setup and migration](apps/network/docs/transports.md#http-deployment-security).
+MCP HTTP is unauthenticated by default and intended for trusted local clients. Set `UNIFI_MCP_HTTP_AUTH_TOKEN` to require a static bearer token on every HTTP request ([details](apps/network/docs/transports.md#http-bearer-token)). HTTP is disabled by default; when enabled, packages bind to loopback. Docker Compose enables it on the container network and publishes ports 3000–3002 on host `127.0.0.1`. Use an authenticated TLS proxy or Cloud Relay for remote access, and prevent direct access to the backend. See the [transport security model](SECURITY.md#mcp-transport-trust-boundary) and [HTTP setup and migration](apps/network/docs/transports.md#http-deployment-security).
 
 | Setting | Default | Purpose |
 |---------|---------|---------|
@@ -86,6 +86,7 @@ MCP HTTP is unauthenticated and intended for trusted local clients. HTTP is disa
 | `UNIFI_MCP_HTTP_FORCE` | `false` | Allow HTTP outside container PID 1 |
 | `UNIFI_MCP_ALLOWED_HOSTS` | `localhost,127.0.0.1` | Complete accepted Host-header list; Compose separately adds required internal hosts |
 | `UNIFI_MCP_ENABLE_DNS_REBINDING_PROTECTION` | `true` | Validate Host headers to prevent DNS-rebinding requests |
+| `UNIFI_MCP_HTTP_AUTH_TOKEN` | unset | Require `Authorization: Bearer <token>` on every HTTP request; at least 32 printable ASCII characters. `UNIFI_<NETWORK\|PROTECT\|ACCESS>_MCP_HTTP_AUTH_TOKEN` overrides it per server, and `_FILE`/`_COMMAND` spellings work. Set but empty refuses startup |
 
 ## MCP Discovery
 

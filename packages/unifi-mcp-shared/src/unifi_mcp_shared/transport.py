@@ -82,13 +82,19 @@ def resolve_http_config(
     return http_enabled, http_transport, host, port
 
 
-def resolve_http_auth_token(*, env_prefix: str, logger: logging.Logger) -> str | None:
+def resolve_http_auth_token(*, env_prefix: str, logger: logging.Logger, configured: Any = None) -> str | None:
     """Resolve the optional bearer token that HTTP callers must present.
 
     Checks ``UNIFI_<PREFIX>_MCP_HTTP_AUTH_TOKEN`` and then the shared
     ``UNIFI_MCP_HTTP_AUTH_TOKEN``; both accept the ``_FILE`` and ``_COMMAND``
-    spellings that the controller credentials do. Returns ``None`` when no token
-    is configured, which leaves HTTP unauthenticated as before.
+    spellings that the controller credentials do. ``configured`` is
+    ``server.http.auth_token`` from ``config.yaml``, used only when no
+    environment spelling is set. Returns ``None`` when no token is configured,
+    which leaves HTTP unauthenticated as before.
+
+    A spelling that is present but empty refuses startup instead of counting as
+    unset: this is an access control, and a secret store that materialises a
+    missing secret as ``""`` must not silently turn authentication off.
 
     A token shorter than :data:`MIN_HTTP_AUTH_TOKEN_LENGTH` characters, or one
     holding whitespace or non-printable/non-ASCII characters (which a client
@@ -98,6 +104,22 @@ def resolve_http_auth_token(*, env_prefix: str, logger: logging.Logger) -> str |
     from unifi_mcp_shared.bootstrap import EXIT_SECRET_UNRESOLVED, resolve_env
 
     token = resolve_env(HTTP_AUTH_TOKEN_KEY, env_prefix=env_prefix, logger=logger)
+    if token is None:
+        upper = HTTP_AUTH_TOKEN_KEY.upper()
+        empty = [
+            f"{base}{suffix}"
+            for base in (f"UNIFI_{env_prefix}_{upper}", f"UNIFI_{upper}")
+            for suffix in ("", "_FILE", "_COMMAND")
+            if os.environ.get(f"{base}{suffix}") == ""
+        ]
+        if empty:
+            logger.error(
+                "[credentials] %s is set but empty. Set a token or unset the variable. "
+                "Refusing to start until it is fixed.",
+                " and ".join(empty),
+            )
+            raise SystemExit(EXIT_SECRET_UNRESOLVED)
+        token = str(configured) if configured else None
     if token is None:
         return None
     if not (token.isascii() and token.isprintable()) or any(ch.isspace() for ch in token):

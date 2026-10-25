@@ -141,8 +141,10 @@ export UNIFI_MCP_HTTP_AUTH_TOKEN="$(openssl rand -hex 32)"
 ```
 
 - The token must be at least 32 printable ASCII characters with no whitespace; anything else refuses startup.
+- A variable that is set but empty also refuses startup, rather than leaving HTTP unauthenticated, so a secret store that writes a missing secret as `""` cannot silently turn authentication off. To run without a token, unset the variable.
 - `UNIFI_NETWORK_MCP_HTTP_AUTH_TOKEN`, `UNIFI_PROTECT_MCP_HTTP_AUTH_TOKEN` and `UNIFI_ACCESS_MCP_HTTP_AUTH_TOKEN` override the shared value for one server, so each can have its own token.
 - Like the controller password, it accepts `..._FILE` (a path holding the token, for Docker or Kubernetes secrets) or `..._COMMAND` (an argv whose stdout is the token), honoured only from the environment the server was started with.
+- `server.http.auth_token` in a `CONFIG_PATH` YAML file is the lowest-precedence source; any of the environment spellings above wins over it.
 - Clients send it as a header, for example `claude mcp add --transport http unifi http://127.0.0.1:3000/mcp --header "Authorization: Bearer $TOKEN"`.
 
 The token is one static secret with no scopes or expiry. It authenticates the caller; it does not encrypt the connection, so carry it only over TLS or loopback. The intended shape is a TLS tunnel or reverse proxy (Cloudflare Tunnel, Tailscale, an ingress) forwarding to a backend that still binds loopback or a private container network. It does not replace the Host/Origin allowlist, policy gates, or `confirm=True`.

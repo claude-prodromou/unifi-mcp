@@ -176,7 +176,11 @@ async def main_async():
             port=port,
             http_transport=http_transport,
             logger=logger,
-            auth_token=resolve_http_auth_token(env_prefix="PROTECT", logger=logger) if http_enabled else None,
+            auth_token=resolve_http_auth_token(
+                env_prefix="PROTECT", logger=logger, configured=config.server.get("http", {}).get("auth_token")
+            )
+            if http_enabled
+            else None,
         )
     finally:
         if startup_connect is not None and not startup_connect.done():

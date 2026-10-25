@@ -214,7 +214,11 @@ async def main_async():
             port=port,
             http_transport=http_transport,
             logger=logger,
-            auth_token=resolve_http_auth_token(env_prefix="NETWORK", logger=logger) if http_enabled else None,
+            auth_token=resolve_http_auth_token(
+                env_prefix="NETWORK", logger=logger, configured=config.server.get("http", {}).get("auth_token")
+            )
+            if http_enabled
+            else None,
         )
     finally:
         if background_task is not None and not background_task.done():
