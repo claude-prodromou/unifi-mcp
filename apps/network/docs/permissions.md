@@ -1,6 +1,6 @@
 # Permission System — Network Server
 
-All tools are always visible and discoverable. Authorization happens at call time through two concepts: **Permission Mode** and **Policy Gates**.
+All tools are visible and discoverable unless read-only mode is on. Authorization happens at call time through two concepts: **Permission Mode** and **Policy Gates**, with **Read-Only Mode** as one switch above both.
 
 ## Permission Mode
 
@@ -15,6 +15,21 @@ Controls how the server handles mutating tool calls globally.
 - **`bypass`** — skips confirmation for all mutations; intended for automation workflows
 
 The server-specific variable takes priority over the global one.
+
+
+## Read-Only Mode
+
+| Variable | Scope | Values | Default |
+|----------|-------|--------|---------|
+| `UNIFI_READ_ONLY` | All servers | `true`, `false` | off |
+| `UNIFI_NETWORK_READ_ONLY` | Network only | `true`, `false` | inherits global |
+
+When on, every create, update and delete is denied whatever the policy gates
+say, and the tools that perform them are not registered: they are absent from
+`tools/list` and from the tool index. Any non-empty value other than the
+accepted true and false forms turns it on, with a warning. The server-specific
+variable takes priority over the global one. See the
+[shared permissions guide](../../../docs/permissions.md#read-only-mode).
 
 ## Policy Gates
 

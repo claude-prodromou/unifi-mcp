@@ -235,7 +235,7 @@ This axis is dynamic — the same tool behaves differently depending on what the
 
 Each tool category has a policy gate that is either enabled or disabled by the administrator in the server configuration. A disabled gate blocks execution for all callers regardless of `permission_mode`.
 
-Key invariant: **tools are always registered and visible regardless of policy gates.** The gate blocks at *execution time*, not at *registration time*. Never assume a tool appearing in the MCP tool list is unrestricted — it may be gated off.
+Key invariant: **tools are always registered and visible regardless of policy gates.** The gate blocks at *execution time*, not at *registration time*. The one exception is read-only mode (`UNIFI_READ_ONLY` / `UNIFI_<SERVER>_READ_ONLY`), where `permissioned_tool` skips registering tools whose action is not `read`; tests that set it must clear `READ_ONLY_HIDDEN_TOOLS` alongside `TOOL_REGISTRY`. Never assume a tool appearing in the MCP tool list is unrestricted — it may be gated off.
 
 | Axis | Controls | Configured via | Trigger behavior |
 |---|---|---|---|

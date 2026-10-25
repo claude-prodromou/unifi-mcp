@@ -134,7 +134,11 @@ async def start_event_listener_after_connection(*, config, connection_manager, e
 async def main_async():
     """Main asynchronous function to setup and run the server."""
     from unifi_core.config_helpers import parse_config_bool
-    from unifi_core.policy_gate import check_deprecated_env_vars, check_unknown_policy_env_vars
+    from unifi_core.policy_gate import (
+        check_deprecated_env_vars,
+        check_unknown_policy_env_vars,
+        log_read_only_mode,
+    )
     from unifi_mcp_shared.server_lifecycle import apply_log_level, install_asyncio_exception_handler
     from unifi_mcp_shared.setup_required import controller_host_configured, serve_setup_required
     from unifi_mcp_shared.tool_registration import register_tools_for_mode
@@ -144,6 +148,7 @@ async def main_async():
     apply_log_level(config, "unifi-network-mcp")
     check_deprecated_env_vars("network", logger)
     check_unknown_policy_env_vars("network", logger, policy_gates(), NETWORK_CATEGORY_MAP)
+    log_read_only_mode("network", logger)
     if not controller_host_configured(config):
         # Answer initialize and explain setup instead of exiting; register no
         # controller tools and open no controller connection.

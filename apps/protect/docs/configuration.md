@@ -106,11 +106,12 @@ Diagnostics log operation metadata only. Controller payloads, paths, and excepti
 
 ## Permissions
 
-Authorization is enforced at call time. All tools remain visible regardless of permission configuration. See [permissions.md](permissions.md) for full details.
+Authorization is enforced at call time. All tools remain visible regardless of permission configuration, except in read-only mode, which leaves tools that create, update or delete unregistered. See [permissions.md](permissions.md) for full details.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `UNIFI_PROTECT_TOOL_PERMISSION_MODE` / `UNIFI_TOOL_PERMISSION_MODE` | `confirm` | `confirm` (preview-then-confirm flow) or `bypass` (skip confirmations) |
+| `UNIFI_PROTECT_READ_ONLY` / `UNIFI_READ_ONLY` | off | `true` denies every non-read action, overriding policy gates, and leaves mutating tools unregistered |
 
 Policy gates follow the pattern `UNIFI_POLICY_PROTECT_<CATEGORY>_<ACTION>` (most specific) down to `UNIFI_POLICY_<ACTION>` (global). Most specific wins.
 

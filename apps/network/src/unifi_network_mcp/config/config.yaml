@@ -84,4 +84,6 @@ policy:
 #   UNIFI_POLICY_<ACTION>=true|false (global policy gates)
 #   UNIFI_POLICY_<SERVER>_<ACTION>=true|false (per-server)
 #   UNIFI_POLICY_<SERVER>_<CATEGORY>_<ACTION>=true|false (per-category)
+#   UNIFI_READ_ONLY=true or UNIFI_<SERVER>_READ_ONLY=true (deny every non-read action
+#     and leave tools that change state unregistered; overrides the policy gates)
 # See documentation for details.

@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from unifi_core.policy_gate import resolve_read_only
 from unifi_mcp_shared.tool_index import (
     TOOL_REGISTRY,
     ToolMetadata,
@@ -22,7 +23,12 @@ def get_tool_index(**kwargs):
         registration_mode = "lazy"
 
     manifest_path = Path(__file__).parent / "tools_manifest.json"
-    return _get_tool_index(registration_mode=registration_mode, manifest_path=manifest_path, **kwargs)
+    return _get_tool_index(
+        registration_mode=registration_mode,
+        manifest_path=manifest_path,
+        read_only=resolve_read_only("access"),
+        **kwargs,
+    )
 
 
 async def tool_index_handler(args=None):

@@ -14,6 +14,8 @@ from functools import wraps
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Sequence, Set
 
+from unifi_mcp_shared.tool_index import READ_ONLY_HIDDEN_TOOLS
+
 logger = logging.getLogger(__name__)
 
 
@@ -174,6 +176,10 @@ class LazyToolLoader:
                 importlib.import_module(module_path)
                 self.loaded_modules.add(module_path)
 
+            if tool_name in READ_ONLY_HIDDEN_TOOLS:
+                logger.info("Tool '%s' is not available: the server is in read-only mode", tool_name)
+                return False
+
             # Mark tool as loaded
             self.loaded_tools.add(tool_name)
 
@@ -237,6 +243,8 @@ class LazyToolLoader:
         if not self.is_loaded(name) and name in self.tool_module_map:
             loaded = await self.load_tool(name)
             if not loaded:
+                if name in READ_ONLY_HIDDEN_TOOLS:
+                    raise ValueError(f"Tool '{name}' is not available: the server is in read-only mode")
                 raise ValueError(f"Failed to load tool '{name}'")
 
         # Call the original method

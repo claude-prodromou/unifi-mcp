@@ -23,7 +23,7 @@ from mcp.types import ToolAnnotations
 from pydantic import SkipValidation
 
 from unifi_mcp_shared.response_serialization import normalize_call_tool_result
-from unifi_mcp_shared.tool_index import normalize_tool_annotations
+from unifi_mcp_shared.tool_index import READ_ONLY_HIDDEN_TOOLS, normalize_tool_annotations
 
 if TYPE_CHECKING:
     from unifi_mcp_shared.lazy_tools import LazyToolLoader
@@ -630,6 +630,8 @@ def register_load_tools(
                 success = await lazy_loader.load_tool(tool_name)
                 if success:
                     loaded.append(tool_name)
+                elif tool_name in READ_ONLY_HIDDEN_TOOLS:
+                    errors.append({"tool": tool_name, "error": "Not available: the server is in read-only mode"})
                 else:
                     errors.append({"tool": tool_name, "error": "Failed to load"})
             except Exception as e:

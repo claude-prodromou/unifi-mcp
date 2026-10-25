@@ -169,7 +169,9 @@ Three-level hierarchy (most specific wins): `UNIFI_POLICY_<SERVER>_<CATEGORY>_<A
 
 Actions: `CREATE`, `UPDATE`, `DELETE`. Unset = allowed.
 
-All tools MUST remain visible and discoverable regardless of policy gates. Authorization is checked at call time by the `permissioned_tool` decorator.
+**Read-Only Mode** — `UNIFI_<SERVER>_READ_ONLY` > `UNIFI_READ_ONLY`, off when unset. When on, every non-read action is denied before any policy gate is read, and `permissioned_tool` does not register tools whose action is not `read`.
+
+All tools MUST remain visible and discoverable regardless of policy gates. Authorization is checked at call time by the `permissioned_tool` decorator. Read-only mode is the only exception, and it keeps the call-time denial as well.
 
 - **Anchor:** `packages/unifi-mcp-shared/src/unifi_mcp_shared/policy_gate.py`
 

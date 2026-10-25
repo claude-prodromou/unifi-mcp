@@ -66,7 +66,8 @@ UniFi MCP is designed with a **secure-by-default** posture:
 - **Confirm-by-default** for all mutations (create, update, delete) — the client must explicitly request execution
 - **Policy gates** (`UNIFI_POLICY_*` env vars) provide hard boundaries to disable specific actions when needed
 - Read-only operations are always allowed
-- All tools are always visible and discoverable in the tool index — authorization is enforced at call time
+- **Read-only mode** (`UNIFI_READ_ONLY=true`, or `UNIFI_<SERVER>_READ_ONLY=true` for one server) denies every create, update and delete whatever the policy gates say, and leaves those tools unregistered
+- Outside read-only mode, all tools are always visible and discoverable in the tool index — authorization is enforced at call time
 - Tools denied by policy gates return a clear error with guidance on how to enable
 
 ### Preview-Before-Confirm

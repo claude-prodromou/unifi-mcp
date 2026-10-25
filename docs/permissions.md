@@ -1,17 +1,18 @@
 # Permission System
 
-The UniFi MCP permission system gives you precise control over how tools behave — from fully interactive with confirmation prompts, to fully automated, to hard read-only enforcement — without hiding tools from agents.
+The UniFi MCP permission system gives you precise control over how tools behave — from fully interactive with confirmation prompts, to fully automated, to hard read-only enforcement. Only read-only mode hides tools from agents; everything else leaves them visible.
 
 ## Core Concept
 
-All tools are always visible and discoverable. Authorization is checked at **call time**, not at registration time. This means agents can always see what tools exist and get clear, actionable errors when a policy gate blocks an action.
+Outside read-only mode, all tools are always visible and discoverable. Authorization is checked at **call time**, not at registration time. This means agents can always see what tools exist and get clear, actionable errors when a policy gate blocks an action.
 
-There are two independent concepts:
+There are three concepts:
 
 | Concept | What it controls |
 |---------|-----------------|
 | **Permission Mode** | Whether mutations require a preview-then-confirm step |
 | **Policy Gates** | Hard on/off switches that disable specific actions entirely |
+| **Read-Only Mode** | One switch that denies every create, update and delete and leaves those tools unregistered |
 
 ---
 
@@ -105,6 +106,46 @@ level.
 
 ---
 
+## Read-Only Mode
+
+Read-only mode is a single opt-in switch for a server that must never change
+controller state. It is off unless you set it.
+
+| Variable | Scope | Example |
+|----------|-------|---------|
+| `UNIFI_READ_ONLY` | Global (all servers) | `UNIFI_READ_ONLY=true` |
+| `UNIFI_<SERVER>_READ_ONLY` | Per-server | `UNIFI_NETWORK_READ_ONLY=true` |
+
+The server-specific variable wins over the global one, so
+`UNIFI_READ_ONLY=true` with `UNIFI_PROTECT_READ_ONLY=false` leaves only the
+Protect server writable. Accepted values are the same as for policy gates. Any
+other non-empty value turns read-only mode **on** and logs a warning, so a typo
+cannot leave writes allowed. An empty value counts as unset.
+
+With read-only mode on, a server:
+
+- **Denies every non-read action at call time**, whatever the `UNIFI_POLICY_*`
+  variables say. No policy gate re-enables an action, and no `confirm=true`
+  reaches the controller. The denial names read-only mode as the reason.
+- **Does not register tools that create, update or delete.** They are absent
+  from `tools/list`, from `*_tool_index` (whose result carries
+  `"read_only": true`) and from eager-mode registration. `*_execute`,
+  `*_batch` and `*_load_tools` report a named tool as not available in
+  read-only mode rather than running it.
+- Keeps every read tool, the meta-tools and the support bundle.
+
+This is the one exception to call-time-only enforcement. A read-only
+deployment has no use for a tool it can never run, and listing one spends
+context on it and invites the agent to try. The call-time denial stays in
+place underneath, so a tool that reached the registry by another path is still
+refused.
+
+Policy gates are still the tool for anything narrower, such as denying deletes
+only. Read-only mode is checked first: when it is on, the gates are not read
+for non-read actions.
+
+---
+
 ## Practical Scenarios
 
 ### Zero config (default)
@@ -120,6 +161,14 @@ UNIFI_TOOL_PERMISSION_MODE=bypass
 ```
 
 ### Enterprise read-only: block all mutations
+```bash
+UNIFI_READ_ONLY=true
+```
+
+Mutating tools are not registered, and every non-read action is denied. To
+keep those tools visible and refuse them at call time instead, deny each
+action with a policy gate:
+
 ```bash
 UNIFI_POLICY_CREATE=false
 UNIFI_POLICY_UPDATE=false
@@ -173,6 +222,9 @@ Or in a Claude Desktop / MCP client config:
 | Where is access checked? | At server startup (registration) | At call time |
 | Agent feedback on denied action | Tool doesn't exist | Clear error with fix instructions |
 | Restart after changing the launcher environment? | Yes | Yes — the new process must inherit it |
+
+Read-only mode is the deliberate exception: it is opt-in, server-wide, and
+hides only tools the server can never run while it is on.
 
 Call-time enforcement means a denied tool stays discoverable and receives a
 fresh policy check on every invocation. It does not let a running process see

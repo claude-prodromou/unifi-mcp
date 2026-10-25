@@ -66,6 +66,10 @@ class ToolMetadata:
 # Global dictionary mapping tool names to their metadata
 TOOL_REGISTRY: Dict[str, ToolMetadata] = {}
 
+# Tools that read-only mode kept out of the registry and the MCP tool list,
+# so loaders can say why a known tool name is unavailable.
+READ_ONLY_HIDDEN_TOOLS: set[str] = set()
+
 _TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
 _MAX_SEARCH_RESULTS = 20
 _SEARCH_STOP_WORDS = frozenset(
@@ -216,6 +220,7 @@ def get_tool_index(
     search: str | None = None,
     include_schemas: bool = False,
     name: str | None = None,
+    read_only: bool = False,
 ) -> Dict[str, Any]:
     """Get the tool index, optionally filtered to reduce response size.
 
@@ -233,6 +238,9 @@ def get_tool_index(
         search: Case-insensitive token search ranked over tool name and description.
         include_schemas: If True, include full input/output schemas per tool.
         name: Exact, case-sensitive tool name. Cannot be combined with category or search.
+        read_only: The server runs in read-only mode. Tools whose permission
+            action is not ``read`` are left out, matching what the server
+            registers, and the result carries ``"read_only": True``.
 
     Returns:
         Dictionary with "tools", "count", and "categories" keys.
@@ -250,6 +258,9 @@ def get_tool_index(
             all_tools = _tools_from_registry()
     else:
         all_tools = _tools_from_registry()
+
+    if read_only:
+        all_tools = [t for t in all_tools if str(t.get("permission_action") or "read").lower() == "read"]
 
     # Derive per-tool category from module_map (last segment of module path)
     def _category(tool_name: str) -> str:
@@ -292,6 +303,8 @@ def get_tool_index(
     }
     if category or search or name is not None:
         result["filtered"] = True
+    if read_only:
+        result["read_only"] = True
     return result
 
 

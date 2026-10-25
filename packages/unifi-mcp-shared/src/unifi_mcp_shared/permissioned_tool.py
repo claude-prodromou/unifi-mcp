@@ -11,11 +11,11 @@ from functools import wraps
 from typing import Any, Callable
 
 from unifi_core.permission import _infer_input_schema
-from unifi_core.policy_gate import resolve_permission_mode
+from unifi_core.policy_gate import resolve_permission_mode, resolve_read_only
 
 from unifi_mcp_shared.metadata import tool_title_from_name
 from unifi_mcp_shared.output_schema import apply_unifi_tool_response_signature, get_unifi_tool_response_output_schema
-from unifi_mcp_shared.tool_index import normalize_tool_annotations
+from unifi_mcp_shared.tool_index import READ_ONLY_HIDDEN_TOOLS, normalize_tool_annotations
 
 # Registration kwargs this package understands and FastMCP does not.
 _PROJECT_TOOL_KWARGS = ("permission_category", "permission_action", "auth", "input_schema", "output_schema")
@@ -154,7 +154,11 @@ def create_permissioned_tool(
     """
 
     def permissioned_tool(*d_args, **d_kwargs):
-        """Decorator that registers the tool and checks policy gates at call time."""
+        """Decorator that registers the tool and checks policy gates at call time.
+
+        In read-only mode a tool whose action is not ``read`` is not registered
+        at all; the call-time check below still denies it if it is reached.
+        """
 
         tool_name = d_kwargs.get("name") if d_kwargs.get("name") else (d_args[0] if d_args else None)
 
@@ -168,7 +172,7 @@ def create_permissioned_tool(
             raise ValueError("Invalid tool authentication requirement")
 
         def decorator(func):
-            """Inner decorator that always registers the tool with MCP."""
+            """Inner decorator that registers the tool with MCP unless read-only mode hides it."""
             nonlocal category, action, tool_name
 
             if not tool_name:
@@ -208,7 +212,16 @@ def create_permissioned_tool(
                 wrapped = apply_unifi_tool_response_signature(wrapped)
                 return original_tool_decorator(*d_args, **d_kwargs)(wrapped)
 
-            # ALWAYS register in tool index (for discovery)
+            # Read-only mode: a tool that can change state is neither listed nor
+            # indexed. The function is returned undecorated, as the import-time
+            # stand-in does, so direct calls from tests are unaffected.
+            if action.lower() != "read" and resolve_read_only(server_prefix):
+                READ_ONLY_HIDDEN_TOOLS.add(str(tool_name))
+                logger.debug("Read-only mode: not registering %s", tool_name)
+                return func
+
+            # Otherwise ALWAYS register in tool index (for discovery), even when
+            # a policy gate denies the action: the call returns the denial.
             register_tool_fn(
                 name=tool_name,
                 title=title,
