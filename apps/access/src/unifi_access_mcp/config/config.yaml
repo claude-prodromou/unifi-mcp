@@ -65,6 +65,7 @@ access:
 
 # Permissions are controlled via environment variables:
 #   UNIFI_TOOL_PERMISSION_MODE=confirm|bypass (default: confirm)
+#   UNIFI_REQUIRE_PREVIEW_TOKEN=true|false (default: false; confirm=true needs the preview's token)
 #   UNIFI_POLICY_<ACTION>=true|false (global policy gates)
 #   UNIFI_POLICY_<SERVER>_<ACTION>=true|false (per-server)
 #   UNIFI_POLICY_<SERVER>_<CATEGORY>_<ACTION>=true|false (per-category)

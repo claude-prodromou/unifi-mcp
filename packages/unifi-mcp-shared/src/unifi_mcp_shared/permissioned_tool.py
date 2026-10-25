@@ -8,10 +8,18 @@ from __future__ import annotations
 
 import inspect
 from functools import wraps
-from typing import Any, Callable
+from typing import Annotated, Any, Callable
 
+from pydantic import Field
 from unifi_core.permission import _infer_input_schema
 from unifi_core.policy_gate import resolve_permission_mode
+from unifi_core.preview_token import (
+    PREVIEW_TOKEN_ARGUMENT,
+    PreviewTokenStore,
+    preview_token_required,
+    preview_token_ttl_seconds,
+    request_digest,
+)
 
 from unifi_mcp_shared.metadata import tool_title_from_name
 from unifi_mcp_shared.output_schema import apply_unifi_tool_response_signature, get_unifi_tool_response_output_schema
@@ -19,6 +27,42 @@ from unifi_mcp_shared.tool_index import normalize_tool_annotations
 
 # Registration kwargs this package understands and FastMCP does not.
 _PROJECT_TOOL_KWARGS = ("permission_category", "permission_action", "auth", "input_schema", "output_schema")
+
+_PREVIEW_TOKEN_DESCRIPTION = (
+    "Token from this tool's preview response. Required with confirm=true; the arguments must match the preview."
+)
+# Tools that accept ``preview_token`` in this process, for StrictKwargFastMCP.
+_preview_token_tools: set[str] = set()
+
+
+def preview_token_tools() -> frozenset[str]:
+    """Names of the tools registered to take a ``preview_token`` argument."""
+    return frozenset(_preview_token_tools)
+
+
+def _add_preview_token_parameter(signature: inspect.Signature) -> inspect.Signature:
+    """Return *signature* with an optional keyword-only ``preview_token`` parameter."""
+    params = list(signature.parameters.values())
+    token_param = inspect.Parameter(
+        PREVIEW_TOKEN_ARGUMENT,
+        inspect.Parameter.KEYWORD_ONLY,
+        default=None,
+        annotation=Annotated[str | None, Field(description=_PREVIEW_TOKEN_DESCRIPTION)],
+    )
+    index = next((i for i, p in enumerate(params) if p.kind is inspect.Parameter.VAR_KEYWORD), len(params))
+    params.insert(index, token_param)
+    return signature.replace(parameters=params)
+
+
+def _add_preview_token_property(input_schema: Any) -> Any:
+    """Return a copy of *input_schema* that lists the optional ``preview_token`` argument."""
+    if not isinstance(input_schema, dict) or not isinstance(input_schema.get("properties"), dict):
+        return input_schema
+    properties = {
+        **input_schema["properties"],
+        PREVIEW_TOKEN_ARGUMENT: {"type": "string", "description": _PREVIEW_TOKEN_DESCRIPTION},
+    }
+    return {**input_schema, "properties": properties}
 
 
 def require_policy_check_for_mutating_tool(
@@ -151,7 +195,14 @@ def create_permissioned_tool(
 
     Returns:
         A ``permissioned_tool`` decorator function that acts like ``@server.tool``.
+
+    When preview tokens are enabled for *server_prefix* (see
+    ``unifi_core.preview_token``), every mutating tool with a ``confirm``
+    parameter gains an optional ``preview_token`` argument, its preview
+    responses carry a token, and ``confirm=true`` is refused without a token
+    issued for the same arguments. The setting is read once, here.
     """
+    preview_tokens = PreviewTokenStore(preview_token_ttl_seconds()) if preview_token_required(server_prefix) else None
 
     def permissioned_tool(*d_args, **d_kwargs):
         """Decorator that registers the tool and checks policy gates at call time."""
@@ -208,6 +259,14 @@ def create_permissioned_tool(
                 wrapped = apply_unifi_tool_response_signature(wrapped)
                 return original_tool_decorator(*d_args, **d_kwargs)(wrapped)
 
+            func_sig = inspect.signature(func)
+            uses_preview_token = (
+                preview_tokens is not None and action.lower() != "read" and "confirm" in func_sig.parameters
+            )
+            if uses_preview_token:
+                _preview_token_tools.add(str(tool_name))
+                input_schema = _add_preview_token_property(input_schema)
+
             # ALWAYS register in tool index (for discovery)
             register_tool_fn(
                 name=tool_name,
@@ -228,16 +287,67 @@ def create_permissioned_tool(
                 if not policy_gate_checker.check(category, action):
                     return {"success": False, "error": policy_gate_checker.denial_message(category, action)}
 
+                token = kwargs.pop(PREVIEW_TOKEN_ARGUMENT, None) if uses_preview_token else None
+
                 # 2. Bypass injection — only for mutation actions with confirm param
                 #    Only inject if caller didn't explicitly provide confirm
+                mode = None
                 if action.lower() != "read":
                     mode = resolve_permission_mode(server_prefix)
                     if mode == "bypass":
-                        sig = inspect.signature(func)
-                        if "confirm" in sig.parameters and "confirm" not in kwargs:
+                        if "confirm" in func_sig.parameters and "confirm" not in kwargs:
                             kwargs["confirm"] = True
 
+                # 3. Preview tokens. Bypass mode skips previews by design, so it skips tokens too.
+                if uses_preview_token and mode != "bypass":
+                    return await _call_with_preview_token(args, kwargs, token)
+
                 return await func(*args, **kwargs)
+
+            async def _call_with_preview_token(args: tuple, kwargs: dict, token: Any) -> Any:
+                if preview_tokens is None:
+                    return await func(*args, **kwargs)
+                try:
+                    bound = func_sig.bind(*args, **kwargs)
+                except TypeError:
+                    return {"success": False, "error": f"Failed to run {tool_name}: invalid arguments."}
+                bound.apply_defaults()
+                digest = request_digest(str(tool_name), bound.arguments)
+
+                if bound.arguments.get("confirm"):
+                    if not isinstance(token, str) or not token:
+                        return {
+                            "success": False,
+                            "error": (
+                                f"Failed to execute {tool_name}: this server requires a preview_token. "
+                                "Call it with confirm=false first, then repeat the same arguments with "
+                                "confirm=true and the preview_token from that response."
+                            ),
+                        }
+                    reason = preview_tokens.redeem(token, digest)
+                    if reason is not None:
+                        return {
+                            "success": False,
+                            "error": (
+                                f"Failed to execute {tool_name}: the preview_token was refused because {reason}. "
+                                "Request a new preview with confirm=false."
+                            ),
+                        }
+                    return await func(*args, **kwargs)
+
+                result = await func(*args, **kwargs)
+                if isinstance(result, dict) and result.get("success") is True and result.get("requires_confirmation"):
+                    result = {
+                        **result,
+                        PREVIEW_TOKEN_ARGUMENT: preview_tokens.issue(digest),
+                        "preview_token_expires_in": preview_tokens.ttl_seconds,
+                    }
+                    if isinstance(result.get("message"), str):
+                        result["message"] += " Send the preview_token from this response with confirm=true."
+                return result
+
+            if uses_preview_token:
+                gated_func.__signature__ = _add_preview_token_parameter(func_sig)  # type: ignore[attr-defined]
 
             # Apply diagnostics wrapping if enabled
             wrapped = (

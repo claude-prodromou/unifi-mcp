@@ -74,7 +74,8 @@ UniFi MCP is designed with a **secure-by-default** posture:
 - All state-changing operations use a two-step flow: preview first, then confirm
 - Default call returns a preview of what would change
 - Explicit `confirm=True` is required to execute the mutation
-- The server does not verify human approval or require a previous preview. A client can supply `confirm=True` directly. Human approval must be enforced by the MCP client; `confirm` is an execution guard, not caller authentication or a prompt-injection defense.
+- By default the server does not verify human approval or require a previous preview. A client can supply `confirm=True` directly. Human approval must be enforced by the MCP client; `confirm` is an execution guard, not caller authentication or a prompt-injection defense.
+- `UNIFI_REQUIRE_PREVIEW_TOKEN=true` makes `confirm=True` require a single-use, short-lived token from a preview of the same tool and arguments ([preview tokens](docs/permissions.md#preview-tokens-opt-in)). It proves the previewed request is the one executed, not that a human approved it.
 - `UNIFI_TOOL_PERMISSION_MODE=bypass` can bypass this for automation workflows
 
 ### No Persistent Storage
