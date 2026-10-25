@@ -7,10 +7,10 @@ import { RelayObject } from "../src/relay-object";
 import { TOOL_CALL_TIMEOUT_MS } from "../src/types";
 
 const windowArgs = { start: "2026-08-08T12:00:00Z", end: "2026-08-08T13:00:00Z" };
-function fakeRelay(locations: string[], tools: Map<string, string[]>, result: unknown) {
+function fakeRelay(locations: string[], tools: Map<string, string[]>, result: unknown, annotations?: Record<string, unknown>) {
   const relay = Object.create(RelayObject.prototype) as any;
   relay.ctx = { storage: { sql: { exec: vi.fn(() => ({ toArray: () => locations.map((location_id) => ({ location_id })) })) } } };
-  relay.locationTools = new Map([...tools].map(([id, names]) => [id, names.map((name) => ({ name, description: "" }))]));
+  relay.locationTools = new Map([...tools].map(([id, names]) => [id, names.map((name) => ({ name, description: "", annotations }))]));
   relay.sendToolCall = vi.fn(async (_id: string, _name: string, _args: Record<string, unknown>) => result);
   return relay;
 }
@@ -32,7 +32,8 @@ describe("RelayObject location evidence meta-tool", () => {
   });
   it("reads only the locations an agent token is scoped to", async () => {
     const evidenceTools = ["unifi_get_incident_evidence", "protect_get_incident_evidence"];
-    const relay = fakeRelay(["fixture-1", "fixture-2"], new Map([["fixture-1", evidenceTools], ["fixture-2", evidenceTools]]), null);
+    const relay = fakeRelay(["fixture-1", "fixture-2"], new Map([["fixture-1", evidenceTools], ["fixture-2", evidenceTools]]), null,
+      { readOnlyHint: true });
     const scope = { readOnly: true, locations: ["fixture-1"] };
 
     const outside = await relay.handleToolCall("unifi_location_timeline", { ...windowArgs, location_id: "fixture-2" }, scope);
@@ -41,6 +42,26 @@ describe("RelayObject location evidence meta-tool", () => {
 
     await relay.handleToolCall("unifi_location_timeline", windowArgs, scope);
     expect(new Set(relay.sendToolCall.mock.calls.map((call: any[]) => call[0]))).toEqual(new Set(["fixture-1"]));
+  });
+  it.each([
+    ["false", { readOnlyHint: false }],
+    ["missing", undefined],
+  ])("refuses a read-only token an evidence tool whose readOnlyHint is %s", async (_label, annotations) => {
+    const evidenceTools = ["unifi_get_incident_evidence", "protect_get_incident_evidence"];
+    const relay = fakeRelay(["fixture-1"], new Map([["fixture-1", evidenceTools]]), null, annotations);
+
+    const result = await relay.handleToolCall("unifi_location_timeline", windowArgs, { readOnly: true, locations: null });
+
+    expect(relay.sendToolCall).not.toHaveBeenCalled();
+    expect((result as any).data.sources.map((source: any) => source.outcome)).toEqual(["permission_denied", "permission_denied"]);
+  });
+  it("sends evidence tools annotated read-only to a read-only token", async () => {
+    const evidenceTools = ["unifi_get_incident_evidence", "protect_get_incident_evidence"];
+    const relay = fakeRelay(["fixture-1"], new Map([["fixture-1", evidenceTools]]), null, { readOnlyHint: true });
+
+    await relay.handleToolCall("unifi_location_timeline", windowArgs, { readOnly: true, locations: null });
+
+    expect(relay.sendToolCall.mock.calls.map((call: any[]) => call[1])).toEqual(evidenceTools);
   });
   it("describes location_id as the location UUID in the tool input schema", async () => {
     const relay = fakeRelay([], new Map(), null);

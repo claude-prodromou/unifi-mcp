@@ -790,6 +790,18 @@ describe("scoped agent tokens: admin API", () => {
     expect(await relay.resolveAgentScope(bearer(minted.token))).toEqual({ readOnly: false, locations: ["loc-a", "loc-b"] });
   });
 
+  it("resolves an exact location ID before a location named the same", async () => {
+    const relay = createScopedRelay();
+    // The decoy is stored first, so an unordered ID-or-name match would find it first.
+    addLocation(relay, "loc-b", "loc-a", sampleTools());
+    addLocation(relay, "loc-a", "Home", sampleTools());
+
+    const minted = await mintAgentToken(relay, { name: "home-only", locations: ["loc-a"] });
+
+    expect(minted.locations).toEqual(["loc-a"]);
+    expect(await relay.resolveAgentScope(bearer(minted.token))).toEqual({ readOnly: true, locations: ["loc-a"] });
+  });
+
   it.each([
     [{}, "Missing name"],
     [{ name: "x".repeat(129) }, "maximum length"],
@@ -831,6 +843,19 @@ describe("scoped agent tokens: admin API", () => {
 
     expect(await relay.resolveAgentScope(bearer(byId.token))).toBeNull();
     expect(await relay.resolveAgentScope(bearer(byName.token))).toBeNull();
+  });
+
+  it("revokes the token with a matching ID before a token named the same", async () => {
+    const relay = createScopedRelay();
+    // The decoy is stored first, so an unordered ID-or-name match would find it first.
+    const decoy = await mintAgentToken(relay, { name: "decoy" });
+    const target = await mintAgentToken(relay, { name: "compromised" });
+    relay.ctx.storage.sql.exec(`UPDATE agent_tokens SET name = ? WHERE name = 'decoy'`, target.token_id);
+
+    expect((await relay.fetch(adminRequest("DELETE", `/api/agent-tokens/${target.token_id}`))).status).toBe(204);
+
+    expect(await relay.resolveAgentScope(bearer(target.token))).toBeNull();
+    expect(await relay.resolveAgentScope(bearer(decoy.token))).toEqual({ readOnly: true, locations: null });
   });
 
   it("keeps the static AGENT_TOKEN at full scope and rejects unknown bearers", async () => {

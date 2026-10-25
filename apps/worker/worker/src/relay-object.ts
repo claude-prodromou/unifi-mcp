@@ -612,17 +612,30 @@ export class RelayObject extends DurableObject<Env> implements RelayStub {
     );
   }
 
-  private handleDeleteAgentToken(tokenId: string): Response {
-    const rows = this.ctx.storage.sql.exec(
-      `SELECT token_id FROM agent_tokens WHERE token_id = ? OR name = ?`,
-      tokenId,
-      tokenId,
-    ).toArray();
-    if (rows.length === 0) {
+  private handleDeleteAgentToken(idOrName: string): Response {
+    // A token ID wins over a name, so a token named after another token's ID
+    // cannot redirect a revocation.
+    const tokenId = this.lookupByIdThenName(
+      `SELECT token_id AS id FROM agent_tokens WHERE token_id = ?`,
+      `SELECT token_id AS id FROM agent_tokens WHERE name = ?`,
+      idOrName,
+    );
+    if (tokenId === null) {
       return jsonResponse({ error: "Agent token not found" }, 404);
     }
-    this.ctx.storage.sql.exec(`DELETE FROM agent_tokens WHERE token_id = ?`, rows[0].token_id);
+    this.ctx.storage.sql.exec(`DELETE FROM agent_tokens WHERE token_id = ?`, tokenId);
     return new Response(null, { status: 204 });
+  }
+
+  /** Match an exact ID first and fall back to a name only when no ID matches */
+  private lookupByIdThenName(byId: string, byName: string, value: string): string | null {
+    for (const query of [byId, byName]) {
+      const rows = this.ctx.storage.sql.exec(query, value).toArray();
+      if (rows.length > 0) {
+        return rows[0].id as string;
+      }
+    }
+    return null;
   }
 
   /** Resolve location IDs or names to registered location IDs */
@@ -636,15 +649,16 @@ export class RelayObject extends DurableObject<Env> implements RelayStub {
       if (typeof entry !== "string" || entry.length === 0) {
         return { error: "locations must be a non-empty array of location IDs or names" };
       }
-      const rows = this.ctx.storage.sql.exec(
-        `SELECT location_id FROM locations WHERE location_id = ? OR location_name = ?`,
+      // An ID wins over a name, so a location named after another location's
+      // ID cannot widen or move the scope.
+      const id = this.lookupByIdThenName(
+        `SELECT location_id AS id FROM locations WHERE location_id = ?`,
+        `SELECT location_id AS id FROM locations WHERE location_name = ?`,
         entry,
-        entry,
-      ).toArray();
-      if (rows.length === 0) {
+      );
+      if (id === null) {
         return { error: `Unknown location: ${entry}` };
       }
-      const id = rows[0].location_id as string;
       if (!ids.includes(id)) {
         ids.push(id);
       }
@@ -1031,6 +1045,12 @@ export class RelayObject extends DurableObject<Env> implements RelayStub {
       }
     }
     return collectIncidentEvidence(args, targets, async (target, tool, parameters) => {
+      // The evidence tools are sent directly, not through routeToolCall, so a
+      // read-only token gets the same annotation check here. A refusal is
+      // reported as that source's permission_denied outcome.
+      if (scope.readOnly && !this.isReadOnlyAt(target.location_id, tool)) {
+        throw Object.assign(new Error(readOnlyDenied(tool).error as string), { status: 403 });
+      }
       const response = await this.sendToolCall(
         target.location_id, tool, parameters, parameters.max_elapsed_ms as number,
       );
