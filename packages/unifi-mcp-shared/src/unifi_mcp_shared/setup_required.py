@@ -114,5 +114,9 @@ async def serve_setup_required(
         port=port,
         http_transport=http_transport,
         logger=logger,
-        auth_token=resolve_http_auth_token(env_prefix=env_prefix, logger=logger) if http_enabled else None,
+        auth_token=resolve_http_auth_token(
+            env_prefix=env_prefix, logger=logger, configured=config.server.get("http", {}).get("auth_token")
+        )
+        if http_enabled
+        else None,
     )
