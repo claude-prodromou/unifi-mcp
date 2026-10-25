@@ -115,6 +115,7 @@ HTTP is disabled by default. The stdio transport is recommended for most MCP cli
 | `UNIFI_MCP_HOST` | `127.0.0.1` | HTTP bind address; remote access requires an authenticated proxy or relay |
 | `UNIFI_MCP_PORT` | `3002` | HTTP bind port |
 | `UNIFI_MCP_HTTP_FORCE` | `false` | Force HTTP in non-container environments |
+| `UNIFI_MCP_HTTP_AUTH_TOKEN` | unset | Require `Authorization: Bearer <token>` on every HTTP request; at least 32 printable ASCII characters. `UNIFI_ACCESS_MCP_HTTP_AUTH_TOKEN` overrides it for this server, and both accept the `_FILE` and `_COMMAND` spellings. See [HTTP bearer token](../../network/docs/transports.md#http-bearer-token) |
 
 **Note:** The Access server defaults to port 3002 (vs. 3000 for Network, 3001 for Protect) to allow running all servers simultaneously.
 
