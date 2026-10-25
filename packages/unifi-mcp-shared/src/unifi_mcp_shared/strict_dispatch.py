@@ -25,10 +25,10 @@ from typing import Any
 
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
-from unifi_core.preview_token import PREVIEW_TOKEN_ARGUMENT
 from unifi_core.redaction import redaction_marker_paths
 
 from unifi_mcp_shared.permissioned_tool import preview_token_tools
+from unifi_mcp_shared.preview_token import PREVIEW_TOKEN_ARGUMENT
 
 logger = logging.getLogger(__name__)
 

@@ -13,16 +13,17 @@ from typing import Annotated, Any, Callable
 from pydantic import Field
 from unifi_core.permission import _infer_input_schema
 from unifi_core.policy_gate import resolve_permission_mode
-from unifi_core.preview_token import (
+
+from unifi_mcp_shared.metadata import tool_title_from_name
+from unifi_mcp_shared.output_schema import apply_unifi_tool_response_signature, get_unifi_tool_response_output_schema
+from unifi_mcp_shared.preview_token import (
     PREVIEW_TOKEN_ARGUMENT,
     PreviewTokenStore,
+    check_preview_token_settings,
     preview_token_required,
     preview_token_ttl_seconds,
     request_digest,
 )
-
-from unifi_mcp_shared.metadata import tool_title_from_name
-from unifi_mcp_shared.output_schema import apply_unifi_tool_response_signature, get_unifi_tool_response_output_schema
 from unifi_mcp_shared.tool_index import normalize_tool_annotations
 
 # Registration kwargs this package understands and FastMCP does not.
@@ -197,11 +198,12 @@ def create_permissioned_tool(
         A ``permissioned_tool`` decorator function that acts like ``@server.tool``.
 
     When preview tokens are enabled for *server_prefix* (see
-    ``unifi_core.preview_token``), every mutating tool with a ``confirm``
+    ``unifi_mcp_shared.preview_token``), every mutating tool with a ``confirm``
     parameter gains an optional ``preview_token`` argument, its preview
     responses carry a token, and ``confirm=true`` is refused without a token
-    issued for the same arguments. The setting is read once, here.
+    issued for the same arguments. The setting is read once, here, and logged at startup.
     """
+    check_preview_token_settings(server_prefix, logger)
     preview_tokens = PreviewTokenStore(preview_token_ttl_seconds()) if preview_token_required(server_prefix) else None
 
     def permissioned_tool(*d_args, **d_kwargs):

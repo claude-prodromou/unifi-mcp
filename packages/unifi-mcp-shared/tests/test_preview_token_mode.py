@@ -230,3 +230,19 @@ async def test_read_tools_are_unaffected(tmp_path, monkeypatch):
     tools = await harness.server.list_tools()
     assert "preview_token" not in next(t for t in tools if t.name == "read_tool").input_schema["properties"]
     assert await harness.call("read_tool", {}) == {"success": True, "data": ["default"]}
+
+
+def test_creating_the_decorator_logs_the_mode(monkeypatch, caplog):
+    """Shared logs the mode at setup, so apps need no import of their own."""
+    monkeypatch.setenv("UNIFI_REQUIRE_PREVIEW_TOKEN", "true")
+    with caplog.at_level(logging.INFO, logger="setup"):
+        create_permissioned_tool(
+            original_tool_decorator=MagicMock(),
+            policy_gate_checker=MagicMock(),
+            server_prefix="network",
+            register_tool_fn=MagicMock(),
+            diagnostics_enabled_fn=lambda: False,
+            wrap_tool_fn=lambda func, name: func,
+            logger=logging.getLogger("setup"),
+        )
+    assert "[preview-token] confirm=true requires a preview_token for network" in caplog.text

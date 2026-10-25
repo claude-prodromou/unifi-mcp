@@ -93,7 +93,6 @@ async def connect_at_startup() -> bool:
 async def main_async():
     """Main asynchronous function to setup and run the server."""
     from unifi_core.policy_gate import check_deprecated_env_vars, check_unknown_policy_env_vars
-    from unifi_core.preview_token import check_preview_token_settings
     from unifi_mcp_shared.server_lifecycle import apply_log_level, install_asyncio_exception_handler
     from unifi_mcp_shared.setup_required import controller_host_configured, serve_setup_required
     from unifi_mcp_shared.tool_registration import register_tools_for_mode
@@ -102,7 +101,6 @@ async def main_async():
     install_asyncio_exception_handler(logger)
     apply_log_level(config, "unifi-access-mcp")
     check_deprecated_env_vars("access", logger)
-    check_preview_token_settings("access", logger)
     check_unknown_policy_env_vars("access", logger, policy_gates(), ACCESS_CATEGORY_MAP)
     if not controller_host_configured(config):
         # Answer initialize and explain setup instead of exiting; register no

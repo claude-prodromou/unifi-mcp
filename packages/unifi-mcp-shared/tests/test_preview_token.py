@@ -4,7 +4,7 @@ import logging
 import os
 
 import pytest
-from unifi_core.preview_token import (
+from unifi_mcp_shared.preview_token import (
     DEFAULT_TTL_SECONDS,
     MAX_TTL_SECONDS,
     MIN_TTL_SECONDS,
@@ -53,7 +53,7 @@ class TestPreviewTokenRequired:
 
     def test_unrecognized_value_fails_closed(self, monkeypatch, caplog):
         monkeypatch.setenv("UNIFI_ACCESS_REQUIRE_PREVIEW_TOKEN", "ture")
-        with caplog.at_level(logging.WARNING, logger="unifi_core.preview_token"):
+        with caplog.at_level(logging.WARNING, logger="unifi_mcp_shared.preview_token"):
             assert preview_token_required("access") is True
         assert "UNIFI_ACCESS_REQUIRE_PREVIEW_TOKEN" in caplog.text
         assert "ture" not in caplog.text
