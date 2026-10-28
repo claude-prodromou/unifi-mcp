@@ -2,7 +2,7 @@
 import { DurableObject } from "cloudflare:workers";
 import type { RelayStub } from "./mcp-handler";
 import { handleMcpRequest } from "./mcp-handler";
-import { hashToken, generateToken, extractBearerToken } from "./auth";
+import { hashToken, generateToken, extractBearerToken, validateBearerToken } from "./auth";
 import { collectIncidentEvidence } from "./incident-evidence";
 import { buildToolIndexResponse, TOOL_INDEX_META_TOOL, toolInputSchema, toolServerOrigin } from "./tool-info";
 import type {
@@ -21,8 +21,10 @@ import type {
   FanOutResult,
   AggregatedResponse,
   EvidenceTarget,
+  AgentScope,
+  JsonRpcRequest,
 } from "./types";
-import { PROTOCOL_VERSION, TOOL_CALL_TIMEOUT_MS } from "./types";
+import { FULL_AGENT_SCOPE, MAX_AGENT_TOKEN_NAME_LENGTH, PROTOCOL_VERSION, TOOL_CALL_TIMEOUT_MS } from "./types";
 import LOCATION_TIMELINE_TOOL from "./location-timeline-tool.json";
 
 // ---------------------------------------------------------------------------
@@ -30,6 +32,13 @@ import LOCATION_TIMELINE_TOOL from "./location-timeline-tool.json";
 // ---------------------------------------------------------------------------
 
 const MAX_LOCATION_NAME_LENGTH = 128;
+
+function jsonResponse(data: unknown, status = 200): Response {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
 
 const META_TOOL_EXECUTE: ToolInfo = {
   name: "unifi_execute",
@@ -105,6 +114,25 @@ const META_TOOLS: ToolInfo[] = [
 ];
 
 // ---------------------------------------------------------------------------
+// Agent scope helpers
+// ---------------------------------------------------------------------------
+
+function canSeeLocation(scope: AgentScope, locationId: string): boolean {
+  return scope.locations === null || scope.locations.includes(locationId);
+}
+
+function locationDenied(locationId: string): Record<string, unknown> {
+  return { success: false, error: `Location not available to this agent token: ${locationId}` };
+}
+
+function readOnlyDenied(toolName: string): Record<string, unknown> {
+  return {
+    success: false,
+    error: `Tool ${toolName} is not read-only and this agent token is read-only`,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Relay Durable Object
 // ---------------------------------------------------------------------------
 
@@ -150,6 +178,16 @@ export class RelayObject extends DurableObject<Env> implements RelayStub {
         server_origin TEXT,
         PRIMARY KEY (location_id, tool_name),
         FOREIGN KEY (location_id) REFERENCES locations(location_id)
+      );
+    `);
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS agent_tokens (
+        token_id TEXT PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE,
+        token_hash TEXT NOT NULL UNIQUE,
+        read_only INTEGER NOT NULL,
+        locations TEXT,
+        created_at INTEGER NOT NULL
       );
     `);
     this.ensureLocationToolsTitleColumn();
@@ -264,6 +302,15 @@ export class RelayObject extends DurableObject<Env> implements RelayStub {
     if (path === "/api/locations/token" && request.method === "POST") {
       return this.handleGenerateToken(request);
     }
+    if (path === "/api/agent-tokens" && request.method === "GET") {
+      return this.handleListAgentTokens();
+    }
+    if (path === "/api/agent-tokens" && request.method === "POST") {
+      return this.handleCreateAgentToken(request);
+    }
+    if (path.startsWith("/api/agent-tokens/") && request.method === "DELETE") {
+      return this.handleDeleteAgentToken(decodeURIComponent(path.slice("/api/agent-tokens/".length)));
+    }
     if (path === "/tools" && request.method === "GET") {
       return this.handleGetTools();
     }
@@ -314,10 +361,23 @@ export class RelayObject extends DurableObject<Env> implements RelayStub {
   // -------------------------------------------------------------------------
 
   private async handleMcp(request: Request): Promise<Response> {
+    // Authenticate before reading the body, so an unauthenticated caller
+    // learns nothing from parse errors.
+    const scope = await this.resolveAgentScope(request);
+    if (!scope) {
+      return new Response("Unauthorized", { status: 401 });
+    }
+
+    let body: JsonRpcRequest;
     try {
-      const body = (await request.json()) as import("./types").JsonRpcRequest;
+      body = (await request.json()) as JsonRpcRequest;
+    } catch {
+      return jsonResponse({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } }, 400);
+    }
+
+    try {
       const mode = this.env.TOOL_REGISTRATION_MODE || "lazy";
-      const result = await handleMcpRequest(body, this, mode);
+      const result = await handleMcpRequest(body, this, mode, scope);
       return new Response(JSON.stringify(result), {
         headers: { "Content-Type": "application/json" },
       });
@@ -431,6 +491,183 @@ export class RelayObject extends DurableObject<Env> implements RelayStub {
         headers: { "Content-Type": "application/json" },
       },
     );
+  }
+
+  // -------------------------------------------------------------------------
+  // Agent authorization
+  // -------------------------------------------------------------------------
+
+  /**
+   * The static AGENT_TOKEN keeps full access. Any other bearer must match a
+   * scoped agent token minted through /api/agent-tokens. Returns null when the
+   * request carries neither.
+   */
+  async resolveAgentScope(request: Request): Promise<AgentScope | null> {
+    if (this.env.AGENT_TOKEN && validateBearerToken(request, this.env.AGENT_TOKEN)) {
+      return FULL_AGENT_SCOPE;
+    }
+
+    const token = extractBearerToken(request);
+    if (!token) {
+      return null;
+    }
+
+    const rows = this.ctx.storage.sql.exec(
+      `SELECT read_only, locations FROM agent_tokens WHERE token_hash = ?`,
+      await hashToken(token),
+    ).toArray();
+    if (rows.length === 0) {
+      return null;
+    }
+
+    const locations = rows[0].locations === null ? null : (JSON.parse(rows[0].locations as string) as string[]);
+    return { readOnly: rows[0].read_only !== 0, locations };
+  }
+
+  // -------------------------------------------------------------------------
+  // Admin: /api/agent-tokens
+  // -------------------------------------------------------------------------
+
+  private handleListAgentTokens(): Response {
+    const rows = this.ctx.storage.sql.exec(
+      `SELECT token_id, name, read_only, locations, created_at FROM agent_tokens ORDER BY name`,
+    ).toArray();
+
+    const agentTokens = rows.map((row) => ({
+      token_id: row.token_id as string,
+      name: row.name as string,
+      read_only: row.read_only !== 0,
+      locations: row.locations === null ? null : (JSON.parse(row.locations as string) as string[]),
+      created_at: row.created_at as number,
+    }));
+
+    return jsonResponse({ agent_tokens: agentTokens });
+  }
+
+  private async handleCreateAgentToken(request: Request): Promise<Response> {
+    let body: Record<string, unknown>;
+    try {
+      body = (await request.json()) as Record<string, unknown>;
+    } catch {
+      return jsonResponse({ error: "Invalid JSON body" }, 400);
+    }
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return jsonResponse({ error: "Invalid JSON body" }, 400);
+    }
+
+    const name = body.name;
+    if (typeof name !== "string" || name.length === 0) {
+      return jsonResponse({ error: "Missing name" }, 400);
+    }
+    if (name.length > MAX_AGENT_TOKEN_NAME_LENGTH) {
+      return jsonResponse({ error: `name exceeds maximum length of ${MAX_AGENT_TOKEN_NAME_LENGTH} characters` }, 400);
+    }
+
+    // Read-only unless the caller explicitly asks for write access.
+    const readOnly = body.read_only ?? true;
+    if (typeof readOnly !== "boolean") {
+      return jsonResponse({ error: "read_only must be a boolean" }, 400);
+    }
+
+    let locationIds: string[] | null = null;
+    if (body.locations !== undefined && body.locations !== null) {
+      const resolved = this.resolveLocationIds(body.locations);
+      if ("error" in resolved) {
+        return jsonResponse({ error: resolved.error }, 400);
+      }
+      locationIds = resolved.ids;
+    }
+
+    const token = generateToken();
+    const tokenHash = await hashToken(token);
+    const tokenId = crypto.randomUUID();
+    const locationsJson = locationIds === null ? null : JSON.stringify(locationIds);
+
+    // Minting an existing name rotates its secret and replaces its scope.
+    this.ctx.storage.sql.exec(
+      `INSERT INTO agent_tokens (token_id, name, token_hash, read_only, locations, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(name) DO UPDATE SET
+         token_hash = excluded.token_hash,
+         read_only = excluded.read_only,
+         locations = excluded.locations`,
+      tokenId,
+      name,
+      tokenHash,
+      readOnly ? 1 : 0,
+      locationsJson,
+      Date.now(),
+    );
+
+    const rows = this.ctx.storage.sql.exec(
+      `SELECT token_id FROM agent_tokens WHERE name = ?`,
+      name,
+    ).toArray();
+
+    return jsonResponse(
+      {
+        token_id: (rows[0]?.token_id as string) || tokenId,
+        name,
+        read_only: readOnly,
+        locations: locationIds,
+        token,
+      },
+      201,
+    );
+  }
+
+  private handleDeleteAgentToken(idOrName: string): Response {
+    // A token ID wins over a name, so a token named after another token's ID
+    // cannot redirect a revocation.
+    const tokenId = this.lookupByIdThenName(
+      `SELECT token_id AS id FROM agent_tokens WHERE token_id = ?`,
+      `SELECT token_id AS id FROM agent_tokens WHERE name = ?`,
+      idOrName,
+    );
+    if (tokenId === null) {
+      return jsonResponse({ error: "Agent token not found" }, 404);
+    }
+    this.ctx.storage.sql.exec(`DELETE FROM agent_tokens WHERE token_id = ?`, tokenId);
+    return new Response(null, { status: 204 });
+  }
+
+  /** Match an exact ID first and fall back to a name only when no ID matches */
+  private lookupByIdThenName(byId: string, byName: string, value: string): string | null {
+    for (const query of [byId, byName]) {
+      const rows = this.ctx.storage.sql.exec(query, value).toArray();
+      if (rows.length > 0) {
+        return rows[0].id as string;
+      }
+    }
+    return null;
+  }
+
+  /** Resolve location IDs or names to registered location IDs */
+  private resolveLocationIds(value: unknown): { ids: string[] } | { error: string } {
+    if (!Array.isArray(value) || value.length === 0) {
+      return { error: "locations must be a non-empty array of location IDs or names" };
+    }
+
+    const ids: string[] = [];
+    for (const entry of value) {
+      if (typeof entry !== "string" || entry.length === 0) {
+        return { error: "locations must be a non-empty array of location IDs or names" };
+      }
+      // An ID wins over a name, so a location named after another location's
+      // ID cannot widen or move the scope.
+      const id = this.lookupByIdThenName(
+        `SELECT location_id AS id FROM locations WHERE location_id = ?`,
+        `SELECT location_id AS id FROM locations WHERE location_name = ?`,
+        entry,
+      );
+      if (id === null) {
+        return { error: `Unknown location: ${entry}` };
+      }
+      if (!ids.includes(id)) {
+        ids.push(id);
+      }
+    }
+    return { ids };
   }
 
   // -------------------------------------------------------------------------
@@ -703,50 +940,55 @@ export class RelayObject extends DurableObject<Env> implements RelayStub {
   // RelayStub interface implementation
   // -------------------------------------------------------------------------
 
-  async getToolList(mode: string): Promise<ToolInfo[]> {
+  async getToolList(mode: string, scope: AgentScope = FULL_AGENT_SCOPE): Promise<ToolInfo[]> {
     if (mode === "lazy" || mode === "meta_only") {
       return META_TOOLS;
     }
 
-    // eager mode: return all deduplicated tools from all locations
-    return this.getAggregatedTools();
+    // eager mode: return all deduplicated tools the caller can reach
+    return this.getAggregatedTools(scope);
   }
 
   async handleToolCall(
     toolName: string,
     args: Record<string, unknown>,
+    scope: AgentScope = FULL_AGENT_SCOPE,
   ): Promise<Record<string, unknown> | AggregatedResponse> {
     // Handle meta-tools
     if (toolName === "unifi_tool_index") {
-      return this.handleToolIndex(args);
+      return this.handleToolIndex(args, scope);
     }
     if (toolName === "unifi_execute") {
-      return this.handleExecute(args);
+      return this.handleExecute(args, scope);
     }
     if (toolName === "unifi_batch") {
-      return this.handleBatch(args);
+      return this.handleBatch(args, scope);
     }
     if (toolName === "unifi_location_timeline") {
-      return this.handleLocationTimeline(args);
+      return this.handleLocationTimeline(args, scope);
     }
 
     // Direct tool call (eager mode)
-    return this.routeToolCall(toolName, args);
+    return this.routeToolCall(toolName, args, scope);
   }
 
-  async isMultiLocation(): Promise<boolean> {
-    return this.locationTools.size > 1;
+  async isMultiLocation(scope: AgentScope = FULL_AGENT_SCOPE): Promise<boolean> {
+    return this.visibleCatalog(scope).locationTools.size > 1;
   }
 
   // -------------------------------------------------------------------------
   // Meta-tool handlers
   // -------------------------------------------------------------------------
 
-  private handleToolIndex(args: Record<string, unknown>): Record<string, unknown> {
-    return buildToolIndexResponse(this.locationTools, this.toolToLocations, args);
+  private handleToolIndex(args: Record<string, unknown>, scope: AgentScope): Record<string, unknown> {
+    const catalog = this.visibleCatalog(scope);
+    return buildToolIndexResponse(catalog.locationTools, catalog.toolToLocations, args);
   }
 
-  private async handleExecute(args: Record<string, unknown>): Promise<Record<string, unknown> | AggregatedResponse> {
+  private async handleExecute(
+    args: Record<string, unknown>,
+    scope: AgentScope,
+  ): Promise<Record<string, unknown> | AggregatedResponse> {
     const toolName = args.tool as string;
     if (!toolName) {
       return { success: false, error: "Missing required argument: tool" };
@@ -758,10 +1000,10 @@ export class RelayObject extends DurableObject<Env> implements RelayStub {
       toolArgs.__location = location;
     }
 
-    return this.routeToolCall(toolName, toolArgs);
+    return this.routeToolCall(toolName, toolArgs, scope);
   }
 
-  private async handleBatch(args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  private async handleBatch(args: Record<string, unknown>, scope: AgentScope): Promise<Record<string, unknown>> {
     const calls = args.calls as Array<{ tool: string; arguments?: Record<string, unknown>; __location?: string }>;
     if (!calls || !Array.isArray(calls)) {
       return { success: false, error: "Missing required argument: calls (array)" };
@@ -773,7 +1015,7 @@ export class RelayObject extends DurableObject<Env> implements RelayStub {
         if (call.__location) {
           callArgs.__location = call.__location;
         }
-        return this.routeToolCall(call.tool, callArgs);
+        return this.routeToolCall(call.tool, callArgs, scope);
       }),
     );
 
@@ -788,12 +1030,18 @@ export class RelayObject extends DurableObject<Env> implements RelayStub {
     return { success: true, data: { results, total: results.length } };
   }
 
-  private async handleLocationTimeline(args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  private async handleLocationTimeline(
+    args: Record<string, unknown>,
+    scope: AgentScope,
+  ): Promise<Record<string, unknown>> {
     const products = ["network", "protect"] as const;
     const targets: EvidenceTarget[] = [];
     const locations = this.ctx.storage.sql.exec(`SELECT location_id FROM locations`).toArray();
     for (const row of locations) {
       const locationId = row.location_id as string;
+      if (!canSeeLocation(scope, locationId)) {
+        continue;
+      }
       const tools = this.locationTools.get(locationId) ?? [];
       for (const product of products) {
         const toolName = product === "network" ? "unifi_get_incident_evidence" : "protect_get_incident_evidence";
@@ -801,6 +1049,12 @@ export class RelayObject extends DurableObject<Env> implements RelayStub {
       }
     }
     return collectIncidentEvidence(args, targets, async (target, tool, parameters) => {
+      // The evidence tools are sent directly, not through routeToolCall, so a
+      // read-only token gets the same annotation check here. A refusal is
+      // reported as that source's permission_denied outcome.
+      if (scope.readOnly && !this.isReadOnlyAt(target.location_id, tool)) {
+        throw Object.assign(new Error(readOnlyDenied(tool).error as string), { status: 403 });
+      }
       const response = await this.sendToolCall(
         target.location_id, tool, parameters, parameters.max_elapsed_ms as number,
       );
@@ -815,29 +1069,50 @@ export class RelayObject extends DurableObject<Env> implements RelayStub {
   private async routeToolCall(
     toolName: string,
     args: Record<string, unknown>,
+    scope: AgentScope = FULL_AGENT_SCOPE,
   ): Promise<Record<string, unknown> | AggregatedResponse> {
-    const locations = this.toolToLocations.get(toolName);
-    if (!locations || locations.length === 0) {
+    // A tool that exists only at locations outside the scope reads as missing.
+    const locations = (this.toolToLocations.get(toolName) ?? []).filter((id) => canSeeLocation(scope, id));
+    if (locations.length === 0) {
       return { success: false, error: `Tool not found: ${toolName}` };
     }
 
+    // An explicit __location is held to the scope on every path, so a token
+    // that sees one location cannot name another and have the call land here.
+    const targetLocation = args.__location as string | undefined;
+    if (targetLocation && !canSeeLocation(scope, targetLocation)) {
+      return locationDenied(targetLocation);
+    }
+    const { __location, ...cleanArgs } = args;
+
     // Single location: always route directly
-    if (this.locationTools.size === 1) {
+    if (this.visibleLocationIds(scope).length === 1) {
       const locationId = locations[0];
-      return this.sendToolCall(locationId, toolName, args);
+      if (scope.readOnly && !this.isReadOnlyAt(locationId, toolName)) {
+        return readOnlyDenied(toolName);
+      }
+      return this.sendToolCall(locationId, toolName, cleanArgs);
     }
 
     // Multi-location: check if the tool is read-only
-    const toolInfo = this.findToolInfo(toolName);
+    const toolInfo = this.findToolInfo(toolName, locations);
     const isReadOnly = toolInfo?.annotations?.readOnlyHint === true;
 
     if (isReadOnly) {
+      // A read-only token never fans out to a location that annotates the
+      // same tool as a write.
+      if (scope.readOnly && !locations.every((id) => this.isReadOnlyAt(id, toolName))) {
+        return readOnlyDenied(toolName);
+      }
       // Fan out to all locations that have this tool
       return this.fanOutToolCall(toolName, args, locations);
     }
 
+    if (scope.readOnly) {
+      return readOnlyDenied(toolName);
+    }
+
     // Write tool: requires explicit __location
-    const targetLocation = args.__location as string | undefined;
     if (!targetLocation) {
       // Build a helpful error with available locations
       const locationNames = locations.map((locId) => {
@@ -853,8 +1128,6 @@ export class RelayObject extends DurableObject<Env> implements RelayStub {
       };
     }
 
-    // Remove __location from args before sending
-    const { __location, ...cleanArgs } = args;
     return this.sendToolCall(targetLocation, toolName, cleanArgs);
   }
 
@@ -968,12 +1241,12 @@ export class RelayObject extends DurableObject<Env> implements RelayStub {
   // Helper methods
   // -------------------------------------------------------------------------
 
-  /** Get deduplicated tools across all locations (for eager mode) */
-  getAggregatedTools(): ToolInfo[] {
+  /** Get deduplicated tools across the caller's locations (for eager mode) */
+  getAggregatedTools(scope: AgentScope = FULL_AGENT_SCOPE): ToolInfo[] {
     const seen = new Set<string>();
     const tools: ToolInfo[] = [];
 
-    for (const locationToolList of this.locationTools.values()) {
+    for (const locationToolList of this.visibleCatalog(scope).locationTools.values()) {
       for (const tool of locationToolList) {
         if (!seen.has(tool.name)) {
           seen.add(tool.name);
@@ -985,12 +1258,51 @@ export class RelayObject extends DurableObject<Env> implements RelayStub {
     return tools;
   }
 
-  private findToolInfo(toolName: string): ToolInfo | undefined {
-    for (const tools of this.locationTools.values()) {
+  private findToolInfo(toolName: string, locationIds?: string[]): ToolInfo | undefined {
+    for (const [locationId, tools] of this.locationTools) {
+      if (locationIds && !locationIds.includes(locationId)) continue;
       const found = tools.find((t) => t.name === toolName);
       if (found) return found;
     }
     return undefined;
+  }
+
+  /** Whether the tool as registered at this location is annotated read-only */
+  private isReadOnlyAt(locationId: string, toolName: string): boolean {
+    const tool = this.locationTools.get(locationId)?.find((t) => t.name === toolName);
+    return tool?.annotations?.readOnlyHint === true;
+  }
+
+  /** Locations with a registered catalog that the caller may reach */
+  private visibleLocationIds(scope: AgentScope): string[] {
+    return [...this.locationTools.keys()].filter((id) => canSeeLocation(scope, id));
+  }
+
+  /**
+   * The catalog as the caller sees it: only its locations, and for a
+   * read-only token only the tools annotated readOnlyHint=true.
+   */
+  private visibleCatalog(scope: AgentScope): {
+    locationTools: Map<string, ToolInfo[]>;
+    toolToLocations: Map<string, string[]>;
+  } {
+    if (scope.locations === null && !scope.readOnly) {
+      return { locationTools: this.locationTools, toolToLocations: this.toolToLocations };
+    }
+
+    const locationTools = new Map<string, ToolInfo[]>();
+    const toolToLocations = new Map<string, string[]>();
+    for (const [locationId, tools] of this.locationTools) {
+      if (!canSeeLocation(scope, locationId)) continue;
+      const visible = scope.readOnly ? tools.filter((t) => t.annotations?.readOnlyHint === true) : tools;
+      locationTools.set(locationId, visible);
+      for (const tool of visible) {
+        const locs = toolToLocations.get(tool.name) ?? [];
+        if (!locs.includes(locationId)) locs.push(locationId);
+        toolToLocations.set(tool.name, locs);
+      }
+    }
+    return { locationTools, toolToLocations };
   }
 
   private findWebSocketForLocation(locationId: string): WebSocket | null {
