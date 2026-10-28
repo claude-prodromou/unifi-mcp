@@ -6,6 +6,7 @@ import socket
 from contextlib import suppress
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx2 as httpx
 import pytest
 import uvicorn
 from mcp.client import Client
@@ -13,8 +14,16 @@ from mcp.client.sse import sse_client
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel
+from unifi_mcp_shared import bootstrap
 from unifi_mcp_shared.server import UniFiMCPServer
-from unifi_mcp_shared.transport import resolve_http_config, run_transports
+from unifi_mcp_shared.transport import (
+    BearerTokenMiddleware,
+    resolve_http_auth_token,
+    resolve_http_config,
+    run_transports,
+)
+
+TOKEN = "t" * 40
 
 
 class SSEEchoData(BaseModel):
@@ -246,6 +255,251 @@ async def test_real_sdk_v2_sse_transport_completes_handshake() -> None:
                     "success": True,
                     "data": {"value": "ready"},
                 }
+        finally:
+            if http_server is not None:
+                http_server.should_exit = True
+            try:
+                await asyncio.wait_for(transport_task, timeout=3.0)
+            except TimeoutError:
+                transport_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await transport_task
+
+
+class TestResolveHttpAuthToken:
+    """The optional HTTP bearer token resolves like the controller secrets."""
+
+    @pytest.fixture(autouse=True)
+    def _clean_env(self, monkeypatch):
+        for var in (
+            "UNIFI_MCP_HTTP_AUTH_TOKEN",
+            "UNIFI_MCP_HTTP_AUTH_TOKEN_FILE",
+            "UNIFI_MCP_HTTP_AUTH_TOKEN_COMMAND",
+            "UNIFI_NETWORK_MCP_HTTP_AUTH_TOKEN",
+            "UNIFI_NETWORK_MCP_HTTP_AUTH_TOKEN_FILE",
+            "UNIFI_NETWORK_MCP_HTTP_AUTH_TOKEN_COMMAND",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr(bootstrap, "_TRUSTED_VARS", None)
+
+    def test_unset_returns_none(self):
+        assert resolve_http_auth_token(env_prefix="NETWORK", logger=logging.getLogger("test")) is None
+
+    def test_server_level_wins_over_shared(self, monkeypatch):
+        monkeypatch.setenv("UNIFI_MCP_HTTP_AUTH_TOKEN", "s" * 40)
+        monkeypatch.setenv("UNIFI_NETWORK_MCP_HTTP_AUTH_TOKEN", "n" * 40)
+        assert resolve_http_auth_token(env_prefix="NETWORK", logger=logging.getLogger("test")) == "n" * 40
+        assert resolve_http_auth_token(env_prefix="PROTECT", logger=logging.getLogger("test")) == "s" * 40
+
+    def test_file_spelling(self, monkeypatch, tmp_path):
+        secret = tmp_path / "token"
+        secret.write_text("f" * 40 + "\n", encoding="utf-8")
+        secret.chmod(0o600)
+        monkeypatch.setenv("UNIFI_MCP_HTTP_AUTH_TOKEN_FILE", str(secret))
+        assert resolve_http_auth_token(env_prefix="NETWORK", logger=logging.getLogger("test")) == "f" * 40
+
+    @pytest.mark.parametrize(
+        "var",
+        [
+            "UNIFI_MCP_HTTP_AUTH_TOKEN",
+            "UNIFI_NETWORK_MCP_HTTP_AUTH_TOKEN",
+            "UNIFI_MCP_HTTP_AUTH_TOKEN_FILE",
+            "UNIFI_NETWORK_MCP_HTTP_AUTH_TOKEN_COMMAND",
+        ],
+    )
+    def test_explicitly_empty_token_refuses_startup(self, monkeypatch, caplog, var):
+        monkeypatch.setenv(var, "")
+        with pytest.raises(SystemExit) as exc:
+            resolve_http_auth_token(env_prefix="NETWORK", logger=logging.getLogger("test"), configured="c" * 40)
+        assert exc.value.code == bootstrap.EXIT_SECRET_UNRESOLVED
+        assert f"{var} is set but empty" in caplog.text
+
+    def test_empty_server_level_falls_through_to_shared(self, monkeypatch):
+        monkeypatch.setenv("UNIFI_NETWORK_MCP_HTTP_AUTH_TOKEN", "")
+        monkeypatch.setenv("UNIFI_MCP_HTTP_AUTH_TOKEN", "s" * 40)
+        assert resolve_http_auth_token(env_prefix="NETWORK", logger=logging.getLogger("test")) == "s" * 40
+
+    def test_config_value_used_only_without_environment(self, monkeypatch):
+        logger = logging.getLogger("test")
+        assert resolve_http_auth_token(env_prefix="NETWORK", logger=logger, configured="c" * 40) == "c" * 40
+        assert resolve_http_auth_token(env_prefix="NETWORK", logger=logger, configured="") is None
+        monkeypatch.setenv("UNIFI_MCP_HTTP_AUTH_TOKEN", "s" * 40)
+        assert resolve_http_auth_token(env_prefix="NETWORK", logger=logger, configured="c" * 40) == "s" * 40
+
+    def test_short_config_value_refuses_startup(self):
+        with pytest.raises(SystemExit) as exc:
+            resolve_http_auth_token(env_prefix="NETWORK", logger=logging.getLogger("test"), configured="short")
+        assert exc.value.code == bootstrap.EXIT_SECRET_UNRESOLVED
+
+    @pytest.mark.parametrize(
+        ("value", "message"),
+        [
+            ("short-token", "11 characters; use at least 32"),
+            ("a" * 20 + " " + "b" * 20, "printable ASCII with no whitespace"),
+            ("a" * 40 + "\u00e9", "printable ASCII with no whitespace"),
+        ],
+    )
+    def test_unusable_token_refuses_startup(self, monkeypatch, caplog, value, message):
+        monkeypatch.setenv("UNIFI_MCP_HTTP_AUTH_TOKEN", value)
+        with pytest.raises(SystemExit) as exc:
+            resolve_http_auth_token(env_prefix="NETWORK", logger=logging.getLogger("test"))
+        assert exc.value.code == bootstrap.EXIT_SECRET_UNRESOLVED
+        assert message in caplog.text
+        assert value not in caplog.text
+
+
+class TestBearerTokenMiddleware:
+    """Every HTTP request needs the configured bearer token."""
+
+    @pytest.fixture()
+    def calls(self):
+        return []
+
+    @pytest.fixture()
+    def client(self, calls):
+        async def app(scope, receive, send):
+            calls.append(scope["type"])
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"ok"})
+
+        middleware = BearerTokenMiddleware(app, TOKEN, logger=logging.getLogger("test"))
+        return httpx.AsyncClient(transport=httpx.ASGITransport(app=middleware), base_url="http://127.0.0.1")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("header", [f"Bearer {TOKEN}", f"bearer {TOKEN}", f"BEARER  {TOKEN}"])
+    async def test_valid_token_reaches_app(self, client, calls, header):
+        async with client:
+            response = await client.post("/mcp", headers={"Authorization": header})
+        assert response.status_code == 200
+        assert response.text == "ok"
+        assert calls == ["http"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("headers", "challenge", "error"),
+        [
+            ([], 'Bearer realm="unifi-mcp"', "unauthorized"),
+            ([("Authorization", "Bearer wrong")], 'Bearer realm="unifi-mcp", error="invalid_token"', "invalid_token"),
+            (
+                [("Authorization", f"Bearer {TOKEN}x")],
+                'Bearer realm="unifi-mcp", error="invalid_token"',
+                "invalid_token",
+            ),
+            ([("Authorization", f"Basic {TOKEN}")], 'Bearer realm="unifi-mcp", error="invalid_token"', "invalid_token"),
+            ([("Authorization", TOKEN)], 'Bearer realm="unifi-mcp", error="invalid_token"', "invalid_token"),
+            (
+                [("Authorization", f"Bearer {TOKEN}"), ("Authorization", f"Bearer {TOKEN}")],
+                'Bearer realm="unifi-mcp", error="invalid_token"',
+                "invalid_token",
+            ),
+        ],
+    )
+    async def test_rejected_requests_never_reach_app(self, client, calls, caplog, headers, challenge, error):
+        async with client:
+            response = await client.request("GET", "/sse", headers=httpx.Headers(headers))
+        assert response.status_code == 401
+        assert response.headers["www-authenticate"] == challenge
+        assert response.json() == {"error": error}
+        assert calls == []
+        assert "Rejected an HTTP request" in caplog.text
+        assert TOKEN not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_lifespan_passes_through(self):
+        seen = []
+
+        async def app(scope, receive, send):
+            seen.append(scope["type"])
+
+        middleware = BearerTokenMiddleware(app, TOKEN, logger=logging.getLogger("test"))
+        await middleware({"type": "lifespan"}, AsyncMock(), AsyncMock())
+        assert seen == ["lifespan"]
+
+
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("http_transport", ["streamable-http", "sse"])
+async def test_real_transport_requires_configured_bearer_token(http_transport) -> None:
+    """Both production HTTP branches refuse a missing token and serve a valid one."""
+    server = UniFiMCPServer(
+        "auth-transport-test",
+        transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+    )
+
+    @server.tool(
+        annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False),
+        structured_output=True,
+    )
+    async def sse_echo(value: str) -> SSEEchoResult:
+        return SSEEchoResult(success=True, data=SSEEchoData(value=value))
+
+    port = _free_port()
+    real_uvicorn_server = uvicorn.Server
+    http_server: uvicorn.Server | None = None
+
+    def capture_uvicorn_server(config: uvicorn.Config) -> uvicorn.Server:
+        nonlocal http_server
+        http_server = real_uvicorn_server(config)
+        return http_server
+
+    path = "/mcp" if http_transport == "streamable-http" else "/sse"
+    url = f"http://127.0.0.1:{port}{path}"
+    with (
+        patch("unifi_mcp_shared.transport.os.getpid", return_value=1),
+        patch("uvicorn.Server", side_effect=capture_uvicorn_server),
+    ):
+        transport_task = asyncio.create_task(
+            run_transports(
+                server=server,
+                http_enabled=True,
+                host="127.0.0.1",
+                port=port,
+                http_transport=http_transport,
+                logger=logging.getLogger("test"),
+                auth_token=TOKEN,
+            )
+        )
+        try:
+            for _ in range(100):
+                try:
+                    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+                except OSError:
+                    await asyncio.sleep(0.01)
+                    continue
+                writer.close()
+                await writer.wait_closed()
+                del reader
+                break
+            else:
+                raise RuntimeError("authenticated test server did not start")
+
+            async with httpx.AsyncClient() as raw:
+                for headers in ({}, {"Authorization": "Bearer wrong"}):
+                    response = await raw.get(url, headers=headers)
+                    assert response.status_code == 401
+                    assert response.headers["www-authenticate"].startswith('Bearer realm="unifi-mcp"')
+                # The SSE message endpoint is guarded too, not only the stream.
+                if http_transport == "sse":
+                    response = await raw.post(f"http://127.0.0.1:{port}/messages/?session_id=0", json={})
+                    assert response.status_code == 401
+
+            auth = {"Authorization": f"Bearer {TOKEN}"}
+            if http_transport == "sse":
+                transport = sse_client(url, headers=auth)
+            else:
+                from mcp.client.streamable_http import streamable_http_client
+
+                transport = streamable_http_client(url, http_client=httpx.AsyncClient(headers=auth))
+            async with Client(transport) as client:
+                listed = await client.list_tools()
+                assert [tool.name for tool in listed.tools] == ["sse_echo"]
+                result = await client.call_tool("sse_echo", {"value": "ready"})
+                assert result.structured_content == {"success": True, "data": {"value": "ready"}}
         finally:
             if http_server is not None:
                 http_server.should_exit = True

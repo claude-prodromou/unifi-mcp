@@ -138,7 +138,7 @@ async def main_async():
     from unifi_mcp_shared.server_lifecycle import apply_log_level, install_asyncio_exception_handler
     from unifi_mcp_shared.setup_required import controller_host_configured, serve_setup_required
     from unifi_mcp_shared.tool_registration import register_tools_for_mode
-    from unifi_mcp_shared.transport import resolve_http_config, run_transports
+    from unifi_mcp_shared.transport import resolve_http_auth_token, resolve_http_config, run_transports
 
     install_asyncio_exception_handler(logger)
     apply_log_level(config, "unifi-network-mcp")
@@ -214,6 +214,11 @@ async def main_async():
             port=port,
             http_transport=http_transport,
             logger=logger,
+            auth_token=resolve_http_auth_token(
+                env_prefix="NETWORK", logger=logger, configured=config.server.get("http", {}).get("auth_token")
+            )
+            if http_enabled
+            else None,
         )
     finally:
         if background_task is not None and not background_task.done():
