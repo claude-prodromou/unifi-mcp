@@ -99,7 +99,9 @@ class PolicyGateChecker:
 
     def denial_message(self, category: str, action: str) -> str:
         """Build a user-friendly denial message with enable hint."""
-        if action.lower() != "read" and resolve_read_only(self.server_prefix):
+        # check() runs first on every call and has already warned about an
+        # unrecognized read-only value, so this lookup stays silent.
+        if action.lower() != "read" and _read_only_setting(self.server_prefix)[0]:
             return (
                 f"{action.capitalize()} is disabled for {category}: the {self.server_prefix.lower()} server "
                 "is in read-only mode, which no policy gate overrides."
@@ -113,12 +115,11 @@ def read_only_env_var_names(server_prefix: str) -> list[str]:
     return [f"UNIFI_{server_prefix.upper()}_READ_ONLY", "UNIFI_READ_ONLY"]
 
 
-def resolve_read_only(server_prefix: str) -> bool:
-    """Return True when the server runs in read-only mode.
+def _read_only_setting(server_prefix: str) -> tuple[bool, str | None]:
+    """Resolve read-only mode without logging.
 
-    Priority: server-specific > global > default (off). An unrecognized value
-    turns read-only mode on: a misspelt attempt to enable it must not leave
-    mutations allowed.
+    Returns the mode and, when an unrecognized value decided it, that
+    variable's name.
     """
     for var in read_only_env_var_names(server_prefix):
         value = os.environ.get(var)
@@ -126,12 +127,24 @@ def resolve_read_only(server_prefix: str) -> bool:
             continue
         normalized = value.strip().lower()
         if normalized in _TRUTHY:
-            return True
+            return True, None
         if normalized in _FALSY:
-            return False
-        logger.warning("[policy] Unrecognized value for %s, treating as read-only", var)
-        return True
-    return False
+            return False, None
+        return True, var
+    return False, None
+
+
+def resolve_read_only(server_prefix: str) -> bool:
+    """Return True when the server runs in read-only mode.
+
+    Priority: server-specific > global > default (off). An unrecognized value
+    turns read-only mode on: a misspelt attempt to enable it must not leave
+    mutations allowed.
+    """
+    read_only, unrecognized_var = _read_only_setting(server_prefix)
+    if unrecognized_var is not None:
+        logger.warning("[policy] Unrecognized value for %s, treating as read-only", unrecognized_var)
+    return read_only
 
 
 def log_read_only_mode(server_prefix: str, logger) -> bool:
@@ -139,8 +152,8 @@ def log_read_only_mode(server_prefix: str, logger) -> bool:
     if not resolve_read_only(server_prefix):
         return False
     logger.info(
-        "[policy] Read-only mode is on for %s: tools that create, update or delete are not registered, "
-        "and every non-read action is denied whatever the UNIFI_POLICY_* gates say.",
+        "[policy] Read-only mode is on for %s: every tool stays listed, but calls to non-read actions are "
+        "denied whatever the UNIFI_POLICY_* gates say.",
         server_prefix.lower(),
     )
     return True

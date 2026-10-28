@@ -237,7 +237,7 @@ def _clear_read_only_env(monkeypatch):
 
 @pytest.mark.usefixtures("_clear_read_only_env")
 class TestReadOnlyMode:
-    @pytest.mark.parametrize("action", ["create", "update", "delete"])
+    @pytest.mark.parametrize("action", ["create", "update", "delete", "execute"])
     def test_denies_every_non_read_action_even_when_a_gate_allows_it(self, monkeypatch, action):
         monkeypatch.setenv("UNIFI_READ_ONLY", "true")
         monkeypatch.setenv(f"UNIFI_POLICY_PROTECT_CAMERAS_{action.upper()}", "true")
@@ -246,6 +246,17 @@ class TestReadOnlyMode:
 
         assert checker.check("camera", action) is False
         assert checker.check("camera", "read") is True
+
+    @pytest.mark.parametrize("action", ["READ", "Read"])
+    def test_read_is_matched_case_insensitively(self, monkeypatch, action):
+        monkeypatch.setenv("UNIFI_READ_ONLY", "true")
+        checker = PolicyGateChecker("protect", PROTECT_MAP)
+
+        assert checker.check("camera", action) is True
+        assert checker.denial_message("camera", action) == (
+            f"{action.capitalize()} is disabled by policy for camera. "
+            f"Set UNIFI_POLICY_PROTECT_CAMERAS_{action.upper()}=true to enable."
+        )
 
     def test_denial_message_names_read_only_mode_not_a_gate(self, monkeypatch):
         monkeypatch.setenv("UNIFI_READ_ONLY", "true")
@@ -300,6 +311,18 @@ class TestReadOnlyMode:
         assert "Unrecognized value for UNIFI_READ_ONLY" in caplog.text
         assert "ture" not in caplog.text
 
+    def test_unrecognized_value_warns_once_per_denied_call(self, monkeypatch, caplog):
+        monkeypatch.setenv("UNIFI_READ_ONLY", "ture")
+        checker = PolicyGateChecker("protect", PROTECT_MAP)
+
+        with caplog.at_level(logging.WARNING, logger="unifi_core.policy_gate"):
+            assert checker.check("camera", "update") is False
+            message = checker.denial_message("camera", "update")
+
+        assert "read-only mode" in message
+        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert warnings == ["[policy] Unrecognized value for UNIFI_READ_ONLY, treating as read-only"]
+
     def test_startup_log_reports_read_only_mode(self, monkeypatch, caplog):
         with caplog.at_level(logging.INFO, logger="unifi_core.policy_gate"):
             assert log_read_only_mode("network", LOGGER) is False
@@ -309,3 +332,5 @@ class TestReadOnlyMode:
         with caplog.at_level(logging.INFO, logger="unifi_core.policy_gate"):
             assert log_read_only_mode("network", LOGGER) is True
         assert "Read-only mode is on for network" in caplog.text
+        assert "calls to non-read actions are denied" in caplog.text
+        assert "not registered" not in caplog.text

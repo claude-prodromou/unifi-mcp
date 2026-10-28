@@ -105,6 +105,28 @@ level.
 
 ---
 
+## Read-Only Mode
+
+Read-only mode denies every action that is not a read, whatever the policy gates say. No `UNIFI_POLICY_*` variable re-enables an action while it is on. It is off by default.
+
+It covers the Network, Protect and Access MCP servers and the API server (`POST /v1/actions/{tool}`). Every tool stays listed; calls to non-read tools return an error naming read-only mode. The API server refuses mutation previews (`confirm=false`) as well as confirmed calls with HTTP 403 and writes a `denied` audit row; read actions are unaffected.
+
+**Error example:**
+```
+Update is disabled for networks: the network server is in read-only mode, which no policy gate overrides.
+```
+
+| Variable | Scope | Values |
+|----------|-------|--------|
+| `UNIFI_READ_ONLY` | Global (all servers) | `true`/`false` |
+| `UNIFI_<SERVER>_READ_ONLY` | Per-server (`NETWORK`, `PROTECT`, `ACCESS`); overrides global | `true`/`false` |
+
+The API server resolves the per-server variable from the action's product, so `UNIFI_PROTECT_READ_ONLY=true` also blocks `protect_*` mutations on the API.
+
+**Accepted values:** `true`, `1`, `yes`, `on` (case-insensitive) turn it on; `false`, `0`, `no`, `off` turn it off; unset or empty defers to the next level. Any other value turns read-only mode on and logs a warning, so a misspelt attempt to enable it never leaves mutations allowed.
+
+---
+
 ## Practical Scenarios
 
 ### Zero config (default)
@@ -121,10 +143,9 @@ UNIFI_TOOL_PERMISSION_MODE=bypass
 
 ### Enterprise read-only: block all mutations
 ```bash
-UNIFI_POLICY_CREATE=false
-UNIFI_POLICY_UPDATE=false
-UNIFI_POLICY_DELETE=false
+UNIFI_READ_ONLY=true
 ```
+Unlike setting `UNIFI_POLICY_CREATE/UPDATE/DELETE=false`, no more specific policy gate can re-enable an action, and the API server is covered too.
 
 ### Lock down deletes only
 ```bash
