@@ -18,20 +18,21 @@ from unifi_mcp_shared.metadata import tool_title_from_name
 from unifi_mcp_shared.output_schema import apply_unifi_tool_response_signature, get_unifi_tool_response_output_schema
 from unifi_mcp_shared.preview_token import (
     PREVIEW_TOKEN_ARGUMENT,
+    PREVIEW_TOKEN_DESCRIPTION,
     PreviewTokenStore,
+    add_preview_token_property,
     check_preview_token_settings,
     preview_token_required,
     preview_token_ttl_seconds,
     request_digest,
+    set_preview_token_mode,
+    takes_preview_token,
 )
 from unifi_mcp_shared.tool_index import normalize_tool_annotations
 
 # Registration kwargs this package understands and FastMCP does not.
 _PROJECT_TOOL_KWARGS = ("permission_category", "permission_action", "auth", "input_schema", "output_schema")
 
-_PREVIEW_TOKEN_DESCRIPTION = (
-    "Token from this tool's preview response. Required with confirm=true; the arguments must match the preview."
-)
 # Tools that accept ``preview_token`` in this process, for StrictKwargFastMCP.
 _preview_token_tools: set[str] = set()
 
@@ -48,22 +49,11 @@ def _add_preview_token_parameter(signature: inspect.Signature) -> inspect.Signat
         PREVIEW_TOKEN_ARGUMENT,
         inspect.Parameter.KEYWORD_ONLY,
         default=None,
-        annotation=Annotated[str | None, Field(description=_PREVIEW_TOKEN_DESCRIPTION)],
+        annotation=Annotated[str | None, Field(description=PREVIEW_TOKEN_DESCRIPTION)],
     )
     index = next((i for i, p in enumerate(params) if p.kind is inspect.Parameter.VAR_KEYWORD), len(params))
     params.insert(index, token_param)
     return signature.replace(parameters=params)
-
-
-def _add_preview_token_property(input_schema: Any) -> Any:
-    """Return a copy of *input_schema* that lists the optional ``preview_token`` argument."""
-    if not isinstance(input_schema, dict) or not isinstance(input_schema.get("properties"), dict):
-        return input_schema
-    properties = {
-        **input_schema["properties"],
-        PREVIEW_TOKEN_ARGUMENT: {"type": "string", "description": _PREVIEW_TOKEN_DESCRIPTION},
-    }
-    return {**input_schema, "properties": properties}
 
 
 def require_policy_check_for_mutating_tool(
@@ -205,6 +195,7 @@ def create_permissioned_tool(
     """
     check_preview_token_settings(server_prefix, logger)
     preview_tokens = PreviewTokenStore(preview_token_ttl_seconds()) if preview_token_required(server_prefix) else None
+    set_preview_token_mode(preview_tokens is not None)
 
     def permissioned_tool(*d_args, **d_kwargs):
         """Decorator that registers the tool and checks policy gates at call time."""
@@ -262,12 +253,10 @@ def create_permissioned_tool(
                 return original_tool_decorator(*d_args, **d_kwargs)(wrapped)
 
             func_sig = inspect.signature(func)
-            uses_preview_token = (
-                preview_tokens is not None and action.lower() != "read" and "confirm" in func_sig.parameters
-            )
+            uses_preview_token = preview_tokens is not None and takes_preview_token(action, func_sig.parameters)
             if uses_preview_token:
                 _preview_token_tools.add(str(tool_name))
-                input_schema = _add_preview_token_property(input_schema)
+                input_schema = add_preview_token_property(input_schema)
 
             # ALWAYS register in tool index (for discovery)
             register_tool_fn(

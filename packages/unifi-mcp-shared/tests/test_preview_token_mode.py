@@ -14,8 +14,10 @@ from unittest.mock import MagicMock
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
+from unifi_mcp_shared import preview_token
 from unifi_mcp_shared.permissioned_tool import create_permissioned_tool, preview_token_tools
 from unifi_mcp_shared.strict_dispatch import StrictKwargFastMCP
+from unifi_mcp_shared.tool_index import get_tool_index
 
 READ_ONLY = ToolAnnotations(readOnlyHint=True, openWorldHint=False)
 
@@ -25,6 +27,8 @@ def _clear_env(monkeypatch):
     for key in list(os.environ):
         if "PREVIEW_TOKEN" in key or key.endswith("TOOL_PERMISSION_MODE") or key == "UNIFI_AUTO_CONFIRM":
             monkeypatch.delenv(key)
+    # Restored after the test so the recorded mode does not reach other modules.
+    monkeypatch.setattr(preview_token, "_mode_enabled", False)
 
 
 def _manifest(tmp_path: pathlib.Path, tools: dict[str, list[str]]) -> pathlib.Path:
@@ -246,3 +250,49 @@ def test_creating_the_decorator_logs_the_mode(monkeypatch, caplog):
             logger=logging.getLogger("setup"),
         )
     assert "[preview-token] confirm=true requires a preview_token for network" in caplog.text
+
+
+def _lazy_index_schemas(manifest_path: pathlib.Path) -> dict[str, dict]:
+    index = get_tool_index(registration_mode="lazy", manifest_path=manifest_path, include_schemas=True)
+    return {tool["name"]: tool["schema"]["input"]["properties"] for tool in index["tools"]}
+
+
+@pytest.mark.parametrize("enable", [True, False])
+def test_lazy_tool_index_lists_the_argument_only_with_the_mode_on(tmp_path, monkeypatch, enable):
+    """The lazy index reads the committed manifest, which is generated with the mode off."""
+    path = tmp_path / "committed_manifest.json"
+    entries = [
+        ("lazy_rename", "update", ["network_id", "confirm"]),
+        ("lazy_reboot", "update", ["device_id"]),
+        ("lazy_list", None, ["site"]),
+    ]
+    path.write_text(
+        json.dumps(
+            {
+                "tools": [
+                    {
+                        "name": name,
+                        **({"permission_action": action} if action else {}),
+                        "schema": {"input": {"type": "object", "properties": {a: {} for a in args}}},
+                    }
+                    for name, action, args in entries
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    if enable:
+        monkeypatch.setenv("UNIFI_NETWORK_REQUIRE_PREVIEW_TOKEN", "true")
+    # Creating the decorator records the mode; no tool is loaded, as in lazy mode.
+    Harness(tmp_path, "network", {})
+
+    schemas = _lazy_index_schemas(path)
+
+    assert ("preview_token" in schemas["lazy_rename"]) is enable
+    assert "preview_token" not in schemas["lazy_reboot"]
+    assert "preview_token" not in schemas["lazy_list"]
+    if enable:
+        assert schemas["lazy_rename"]["preview_token"]["type"] == "string"
+        # The cached manifest itself is left as committed.
+        monkeypatch.setattr(preview_token, "_mode_enabled", False)
+        assert "preview_token" not in _lazy_index_schemas(path)["lazy_rename"]

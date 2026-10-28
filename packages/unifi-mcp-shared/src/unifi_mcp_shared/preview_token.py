@@ -39,8 +39,44 @@ MAX_TTL_SECONDS = 3600
 # Bounds memory if a caller requests previews and never executes them.
 MAX_OUTSTANDING_TOKENS = 1024
 
+PREVIEW_TOKEN_DESCRIPTION = (
+    "Token from this tool's preview response. Required with confirm=true; the arguments must match the preview."
+)
+
 _TRUTHY = frozenset(("true", "1", "yes", "on"))
 _FALSY = frozenset(("false", "0", "no", "off"))
+
+# Whether this process's server registered its tools with preview tokens on.
+# Set by ``create_permissioned_tool``; read by the lazy-mode tool index, whose
+# committed manifest is generated with the mode off.
+_mode_enabled = False
+
+
+def set_preview_token_mode(enabled: bool) -> None:
+    """Record whether tools in this process are registered with preview tokens on."""
+    global _mode_enabled
+    _mode_enabled = enabled
+
+
+def preview_token_mode_enabled() -> bool:
+    """Whether tools in this process are registered with preview tokens on."""
+    return _mode_enabled
+
+
+def takes_preview_token(action: str | None, parameter_names: Any) -> bool:
+    """Whether a tool takes ``preview_token`` when the mode is on: a mutating tool with ``confirm``."""
+    return isinstance(action, str) and action.lower() != "read" and "confirm" in parameter_names
+
+
+def add_preview_token_property(input_schema: Any) -> Any:
+    """Return a copy of *input_schema* that lists the optional ``preview_token`` argument."""
+    if not isinstance(input_schema, dict) or not isinstance(input_schema.get("properties"), dict):
+        return input_schema
+    properties = {
+        **input_schema["properties"],
+        PREVIEW_TOKEN_ARGUMENT: {"type": "string", "description": PREVIEW_TOKEN_DESCRIPTION},
+    }
+    return {**input_schema, "properties": properties}
 
 
 def preview_token_required(server_prefix: str) -> bool:

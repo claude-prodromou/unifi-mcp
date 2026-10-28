@@ -69,7 +69,7 @@ In `confirm` mode the server does not check that a preview came first: a client 
 }
 ```
 
-A token is single use and expires after `UNIFI_PREVIEW_TOKEN_TTL_SECONDS`. Any presented token is spent, including one refused for changed arguments, so a changed request needs a new preview. Tokens are held in process memory and do not survive a restart. Every mutating tool gains an optional `preview_token` argument while the mode is on; the committed tool manifests are generated with it off.
+A token is single use and expires after `UNIFI_PREVIEW_TOKEN_TTL_SECONDS`. Any presented token is spent, including one refused for changed arguments, so a changed request needs a new preview. Tokens are held in process memory and do not survive a restart. A token is a server-side, single-use secret that is not bound to a client or session: on a shared HTTP server, any client that holds it can redeem it within its lifetime. Every mutating tool gains an optional `preview_token` argument while the mode is on; the committed tool manifests are generated with it off.
 
 | Variable | Scope | Example |
 |----------|-------|---------|
