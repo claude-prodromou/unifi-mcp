@@ -94,3 +94,54 @@ async def test_firewall_group_ids_cannot_reach_another_resource_family(call):
         await call(FirewallManager(connection))
 
     connection.request.assert_not_awaited()
+
+
+def _integration_firewall_manager() -> tuple[FirewallManager, MagicMock]:
+    connection = MagicMock()
+    connection.host = "192.0.2.1"
+    connection.port = 443
+    auth = MagicMock()
+    auth.has_api_key = True
+    auth.get_api_key_session = AsyncMock()
+    return FirewallManager(connection, auth=auth), auth
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "path",
+    [
+        f"/v1/sites/{TRAVERSAL}",
+        "/v1/sites/%2e%2e/firewall/zones",
+        "/v1/sites/..;/firewall/zones",
+        "/v1/sites/x#y",
+    ],
+)
+async def test_firewall_integration_api_refuses_retargeting_paths_before_the_controller(path):
+    manager, auth = _integration_firewall_manager()
+
+    with pytest.raises(InvalidRequestPathError, match="^Invalid controller request path$"):
+        await manager._request_integration_api("get", path)
+
+    auth.get_api_key_session.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("site_id", "zone_id", "message"),
+    [
+        (TRAVERSAL, "0b8f3c1e-7d2a-4c5b-9e6f-1a2b3c4d5e6f", "^Invalid site id$"),
+        ("0b8f3c1e-7d2a-4c5b-9e6f-1a2b3c4d5e6f", "../../policies", "^Invalid firewall zone id$"),
+    ],
+)
+async def test_firewall_integration_zone_ids_cannot_reach_another_resource(site_id, zone_id, message):
+    manager, auth = _integration_firewall_manager()
+    manager._require_zone_mutation_session = AsyncMock()
+    manager._resolve_zone_record = AsyncMock(return_value={"_id": "5f1e2d3c4b5a697887766554", "name": "Lab"})
+    manager._get_integration_site_id = AsyncMock(return_value=site_id)
+    manager._get_integration_firewall_zones = AsyncMock(return_value=[])
+    manager._resolve_integration_zone_record = MagicMock(return_value={"id": zone_id})
+
+    with pytest.raises(InvalidRequestPathError, match=message):
+        await manager.delete_firewall_zone("5f1e2d3c4b5a697887766554")
+
+    auth.get_api_key_session.assert_not_awaited()

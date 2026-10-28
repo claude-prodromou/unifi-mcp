@@ -28,8 +28,10 @@ _OBJECT_ID = re.compile(r"[A-Za-z0-9_:-]+")
 
 # Characters that are never legitimate in the path part of a controller
 # request. ``%`` is refused rather than decoded because yarl collapses
-# ``%2e%2e`` exactly as it collapses ``..``.
-_FORBIDDEN_PATH_CHARS = re.compile(r"[%\\#\s\x00-\x1f\x7f]")
+# ``%2e%2e`` exactly as it collapses ``..``. ``;`` is refused because the
+# Network application runs on Tomcat, which strips path parameters before
+# resolving dot segments, so ``..;`` acts as ``..``.
+_FORBIDDEN_PATH_CHARS = re.compile(r"[%;\\#\s\x00-\x1f\x7f]")
 
 
 class InvalidRequestPathError(ValueError):
@@ -52,8 +54,8 @@ def is_safe_request_path(path: Any) -> bool:
     """Whether a URL parser would send ``path`` to the resource it names.
 
     A query string is allowed - several managers send one - but the path part
-    before it may not contain dot segments, percent-encoding, backslashes,
-    whitespace or a fragment.
+    before it may not contain dot segments, percent-encoding, path parameters
+    (``;``), backslashes, whitespace or a fragment.
     """
     if not isinstance(path, str) or "#" in path:
         return False

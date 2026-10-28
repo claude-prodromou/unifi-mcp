@@ -27,6 +27,8 @@ def test_object_id_accepts_controller_id_forms(value):
         "abc/def",
         "%2e%2e",
         "abc?x=1",
+        "..;",
+        "abc;jsessionid=x",
         "abc#frag",
         "abc\\def",
         "abc def",
@@ -57,6 +59,7 @@ def test_object_id_error_is_a_value_error():
         "/traffic-flow-latest-statistics?period=DAY&top=10",
         "/stat/alarm?archived=true",
         "/traffic?start=1&end=2&path=../ignored",  # dot segments in the query are not path segments
+        "/stat/alarm?note=a;b",  # a ; in the query is not a path parameter
     ],
 )
 def test_safe_request_paths(path):
@@ -73,6 +76,10 @@ def test_safe_request_paths(path):
         "/rest/portforward/%2e%2e/firewallrule/x",
         "/rest/portforward/%2E%2E/firewallrule/x",
         "/rest/portforward/..%2ffirewallrule",
+        "/rest/portforward/..;/firewallrule/5f1e2d3c4b5a697887766554",  # Tomcat treats ..; as ..
+        "/rest/portforward/.;/5f1e2d3c4b5a697887766554",
+        "/rest/portforward/x;jsessionid=abc",
+        "/stat/alarm;x=1?archived=true",
         "/rest/portforward/a\\..\\b",
         "/rest/portforward/a#b",
         "/stat/alarm?archived=true#frag",
