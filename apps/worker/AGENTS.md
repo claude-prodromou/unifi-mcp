@@ -41,7 +41,7 @@ Two workspaces live in one repo:
 - `worker/src/relay-object.ts` — Durable Object (`RelayObject`). All persistent state and WebSocket management lives here.
 - `worker/src/mcp-handler.ts` — MCP JSON-RPC dispatch. Pure function, no side effects beyond calling the `RelayStub` interface.
 - `worker/src/auth.ts` — Token generation, hashing, and validation. All auth primitives live here.
-- `worker/src/cors.ts` — The `CORS_ALLOWED_ORIGINS` allowlist. Responses MUST take CORS headers from `corsHeaders`; never echo an arbitrary `Origin`.
+- `worker/src/cors.ts` — The `CORS_ALLOWED_ORIGINS` allowlist. Responses MUST take CORS headers from `corsHeaders`; never echo an `Origin` outside it. An unset or empty allowlist echoes any Origin; a set one narrows to its entries.
 - `worker/src/types.ts` — All TypeScript interfaces and protocol constants. Shared types MUST be defined here, not inline.
 
 New Worker source files SHOULD be added to `worker/src/` only when they represent a clearly distinct concern. Do not fragment into deep directory trees.

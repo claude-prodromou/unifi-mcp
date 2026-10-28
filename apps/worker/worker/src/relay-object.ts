@@ -121,6 +121,10 @@ function canSeeLocation(scope: AgentScope, locationId: string): boolean {
   return scope.locations === null || scope.locations.includes(locationId);
 }
 
+function locationDenied(locationId: string): Record<string, unknown> {
+  return { success: false, error: `Location not available to this agent token: ${locationId}` };
+}
+
 function readOnlyDenied(toolName: string): Record<string, unknown> {
   return {
     success: false,
@@ -1073,13 +1077,21 @@ export class RelayObject extends DurableObject<Env> implements RelayStub {
       return { success: false, error: `Tool not found: ${toolName}` };
     }
 
+    // An explicit __location is held to the scope on every path, so a token
+    // that sees one location cannot name another and have the call land here.
+    const targetLocation = args.__location as string | undefined;
+    if (targetLocation && !canSeeLocation(scope, targetLocation)) {
+      return locationDenied(targetLocation);
+    }
+    const { __location, ...cleanArgs } = args;
+
     // Single location: always route directly
     if (this.visibleLocationIds(scope).length === 1) {
       const locationId = locations[0];
       if (scope.readOnly && !this.isReadOnlyAt(locationId, toolName)) {
         return readOnlyDenied(toolName);
       }
-      return this.sendToolCall(locationId, toolName, args);
+      return this.sendToolCall(locationId, toolName, cleanArgs);
     }
 
     // Multi-location: check if the tool is read-only
@@ -1101,7 +1113,6 @@ export class RelayObject extends DurableObject<Env> implements RelayStub {
     }
 
     // Write tool: requires explicit __location
-    const targetLocation = args.__location as string | undefined;
     if (!targetLocation) {
       // Build a helpful error with available locations
       const locationNames = locations.map((locId) => {
@@ -1117,12 +1128,6 @@ export class RelayObject extends DurableObject<Env> implements RelayStub {
       };
     }
 
-    if (!canSeeLocation(scope, targetLocation)) {
-      return { success: false, error: `Location not available to this agent token: ${targetLocation}` };
-    }
-
-    // Remove __location from args before sending
-    const { __location, ...cleanArgs } = args;
     return this.sendToolCall(targetLocation, toolName, cleanArgs);
   }
 

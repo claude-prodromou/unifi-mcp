@@ -82,6 +82,38 @@ describe("OPTIONS preflight", () => {
     expect((await preflight("https://evil.example")).headers.get("Access-Control-Allow-Origin")).toBeNull();
     expect((await preflight("https://app.example")).headers.get("Access-Control-Allow-Origin")).toBe("https://app.example");
   });
+
+  it("grants an allowlisted Streamable HTTP client's preflight and exposes its session ID", async () => {
+    const { env } = fakeEnv(Response.json({}), "https://app.example");
+
+    const res = await worker.fetch(
+      new Request("https://relay.example/mcp", {
+        method: "OPTIONS",
+        headers: {
+          Origin: "https://app.example",
+          "Access-Control-Request-Method": "POST",
+          "Access-Control-Request-Headers": "authorization,content-type,mcp-session-id,mcp-protocol-version",
+        },
+      }),
+      env,
+    );
+
+    const allowed = res.headers.get("Access-Control-Allow-Headers")!.toLowerCase().split(", ");
+    expect(res.status).toBe(204);
+    expect(allowed).toEqual(expect.arrayContaining(["authorization", "content-type", "mcp-session-id", "mcp-protocol-version"]));
+    expect(res.headers.get("Access-Control-Expose-Headers")).toBe("Mcp-Session-Id");
+  });
+
+  it("echoes any Origin when no allowlist is configured", async () => {
+    const { env } = fakeEnv(Response.json({}));
+
+    const res = await worker.fetch(
+      new Request("https://relay.example/mcp", { method: "OPTIONS", headers: { Origin: "https://anywhere.example" } }),
+      env,
+    );
+
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("https://anywhere.example");
+  });
 });
 
 describe("Admin API", () => {

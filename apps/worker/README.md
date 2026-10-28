@@ -97,7 +97,7 @@ Secrets are set automatically by the CLI and can be rotated with `unifi-mcp-work
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `TOOL_REGISTRATION_MODE` | `lazy` | Tool registration mode sent to relay clients. `lazy` registers only meta-tools (~200 tokens); `eager` registers all tools upfront (~5,000 tokens) |
-| `CORS_ALLOWED_ORIGINS` | unset | Comma-separated browser origins (for example `https://app.example.com,http://localhost:5173`) allowed to read Worker responses cross-origin. Unset means no origin is allowed, which is what server-side MCP clients need |
+| `CORS_ALLOWED_ORIGINS` | unset | Comma-separated browser origins (for example `https://app.example.com,http://localhost:5173`) allowed to read Worker responses cross-origin. Unset or empty echoes any request Origin; set it to restrict browser access to the listed origins |
 
 Variables are set in `wrangler.toml` under `[vars]` or overridden via the Cloudflare dashboard. `wrangler deploy` (and so `unifi-mcp-worker upgrade`) replaces dashboard variables with `wrangler.toml`, so set `CORS_ALLOWED_ORIGINS` as a secret, which survives deploys:
 
@@ -105,7 +105,7 @@ Variables are set in `wrangler.toml` under `[vars]` or overridden via the Cloudf
 echo "https://app.example.com" | wrangler secret put CORS_ALLOWED_ORIGINS --name <worker-name>
 ```
 
-Only an origin on the list gets `Access-Control-Allow-Origin`; any other origin, including on a preflight, gets no CORS headers and the browser refuses the response.
+Once the list is set, only an origin on it gets `Access-Control-Allow-Origin`; any other origin, a missing Origin, and the opaque `null` origin, including on a preflight, get no CORS headers and the browser refuses the response. Allowed origins may send the Streamable HTTP `Mcp-Session-Id` and `MCP-Protocol-Version` headers and read `Mcp-Session-Id` back.
 
 ---
 
@@ -267,7 +267,7 @@ Read-only operations (tools with `readOnlyHint: true`) are automatically fanned 
 - **Timing-safe token comparison** — all token validation uses constant-time comparison to prevent timing attacks
 - **SHA-256 hashed storage** — relay tokens and scoped agent tokens are stored as hashes in SQLite; the plaintext is never persisted
 - **Scoped agent tokens** — read-only and per-location agent tokens are enforced by the Worker, not only by the LAN servers
-- **CORS allowlist** — browsers may read responses only from origins listed in `CORS_ALLOWED_ORIGINS`; none by default
+- **CORS allowlist** — set `CORS_ALLOWED_ORIGINS` to let browsers read responses only from the listed origins; unset, any origin is echoed
 - **Per-location isolation** — each relay client is identified by its own relay token and location ID; locations cannot access each other's data
 - **HTTPS/WSS transport** — all traffic is encrypted in transit; Cloudflare terminates TLS at the edge
 - **No credentials in config** — tokens and secrets are managed via the CLI or `wrangler secret put`, never committed to source

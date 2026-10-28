@@ -963,6 +963,59 @@ describe("scoped agent tokens: enforcement", () => {
     expect(relay.sendToolCall).not.toHaveBeenCalled();
   });
 
+  describe("a one-location scope on a two-location deployment", () => {
+    const scope = { readOnly: false, locations: ["loc-a"] };
+
+    function twoLocationRelay(): any {
+      const relay = createScopedRelay();
+      addLocation(relay, "loc-a", "Home", sampleTools());
+      addLocation(relay, "loc-b", "Office", sampleTools());
+      return relay;
+    }
+
+    it.each([
+      ["an out-of-scope location", "loc-b"],
+      ["an unknown location", "loc-z"],
+    ])("refuses a write, a read and a batched call naming %s", async (_label, location) => {
+      const relay = twoLocationRelay();
+      const denied = { success: false, error: `Location not available to this agent token: ${location}` };
+
+      const write = await relay.handleToolCall("unifi_execute", { tool: "restart_device", __location: location }, scope);
+      const read = await relay.handleToolCall("unifi_execute", { tool: "list_clients", __location: location }, scope);
+      const direct = await relay.handleToolCall("restart_device", { __location: location }, scope);
+      const batch = await relay.handleToolCall(
+        "unifi_batch",
+        { calls: [{ tool: "restart_device", __location: location }] },
+        scope,
+      );
+
+      expect(write).toEqual(denied);
+      expect(read).toEqual(denied);
+      expect(direct).toEqual(denied);
+      expect(batch.data.results[0].result).toEqual(denied);
+      expect(relay.sendToolCall).not.toHaveBeenCalled();
+      expect(relay.fanOutToolCall).not.toHaveBeenCalled();
+    });
+
+    it("routes a write with the in-scope __location stripped, and one without __location", async () => {
+      const relay = twoLocationRelay();
+
+      const named = await relay.handleToolCall(
+        "unifi_execute",
+        { tool: "restart_device", arguments: { mac: "aa" }, __location: "loc-a" },
+        scope,
+      );
+      const omitted = await relay.handleToolCall("unifi_execute", { tool: "restart_device", arguments: { mac: "aa" } }, scope);
+
+      expect(named).toMatchObject({ success: true, data: { locationId: "loc-a", toolName: "restart_device" } });
+      expect(omitted).toMatchObject({ success: true, data: { locationId: "loc-a", toolName: "restart_device" } });
+      expect(relay.sendToolCall.mock.calls).toEqual([
+        ["loc-a", "restart_device", { mac: "aa" }],
+        ["loc-a", "restart_device", { mac: "aa" }],
+      ]);
+    });
+  });
+
   it("reports a tool registered only outside the scope as not found", async () => {
     const relay = createScopedRelay();
     addLocation(relay, "loc-a", "Home", sampleTools());
