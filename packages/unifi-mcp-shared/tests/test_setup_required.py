@@ -57,3 +57,35 @@ def test_settings_file_state_is_named_without_its_path(state, phrase):
 def test_loaded_file_without_host_adds_no_file_hint():
     text = message("loaded")
     assert "does not exist yet" not in text and "was ignored" not in text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("http_enabled", "expected"), [(True, "y" * 40), (False, None)])
+async def test_setup_mode_keeps_config_auth_token(monkeypatch, http_enabled, expected):
+    """A token set only in config.yaml still guards the setup-mode HTTP endpoint."""
+    import logging
+    from unittest.mock import AsyncMock
+
+    from mcp.server.mcpserver import MCPServer as FastMCP
+    from unifi_mcp_shared.setup_required import serve_setup_required
+
+    for name in ("UNIFI_PROTECT_MCP_HTTP_AUTH_TOKEN", "UNIFI_MCP_HTTP_AUTH_TOKEN"):
+        for suffix in ("", "_FILE", "_COMMAND"):
+            monkeypatch.delenv(f"{name}{suffix}", raising=False)
+    transport = AsyncMock()
+    monkeypatch.setattr("unifi_mcp_shared.transport.run_transports", transport)
+    monkeypatch.setattr(
+        "unifi_mcp_shared.transport.resolve_http_config",
+        lambda *a, **kw: (http_enabled, "streamable-http", "127.0.0.1", 3001),
+    )
+    config = OmegaConf.create({"unifi": {}, "server": {"http": {"enabled": http_enabled, "auth_token": "y" * 40}}})
+    await serve_setup_required(
+        server=FastMCP("test"),
+        config=config,
+        plugin_name="unifi-protect",
+        env_prefix="PROTECT",
+        tool_prefix="protect",
+        default_port=3001,
+        logger=logging.getLogger("test"),
+    )
+    assert transport.await_args.kwargs["auth_token"] == expected
